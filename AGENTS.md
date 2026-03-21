@@ -440,6 +440,32 @@ Practical rule:
 
 Agents must be very careful not to tighten permissions so far that the app becomes unreadable.
 
+### The `wiki` User Is Restricted
+
+The `wiki` user does not have `sudo` access. This has direct operational consequences:
+
+- agents running as `wiki` **cannot** restart services (`nginx`, `php-fpm`, etc.)
+- agents running as `wiki` **cannot** change file ownership (`chown`)
+- agents running as `wiki` **cannot** edit system config under `/etc/`
+
+When an agent edits a file that was previously owned by `wiki:www-data`, the resulting file will be owned by `wiki:wiki` because the agent cannot preserve or restore the `www-data` group. This **will break the live site** for any file that PHP-FPM needs to read (e.g. `LocalSettings.php`, `db.php`).
+
+After any edit to config files, agents **must** tell the operator to run:
+
+```bash
+sudo chown wiki:www-data /home/wiki/dev/wiki/app/config/LocalSettings.php
+sudo chown wiki:www-data /home/wiki/dev/wiki/app/config/secrets/db.php
+```
+
+Similarly, after config changes that affect loaded extensions or PHP, agents must tell the operator to restart PHP-FPM:
+
+```bash
+PHP_VERSION="$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;')"
+sudo systemctl restart "php${PHP_VERSION}-fpm"
+```
+
+Do not silently assume these steps will happen. Always surface them explicitly.
+
 ## Caching
 
 Chosen baseline:
@@ -607,6 +633,7 @@ If you are an LLM coding agent working on this setup:
 - do not change short URL layout casually
 - do not move the app into a mutable single release tree
 - do not assume Caddy and ddclient live under this repo; the live edge stack may be elsewhere
+- the `wiki` user has no `sudo` — after editing config files, tell the operator to fix ownership and restart services
 
 ## Recommended First Checks For Future Agents
 

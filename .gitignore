@@ -7,14 +7,12 @@ Thumbs.db
 .idea/
 .vscode/
 
-# Live secrets
+# Live secrets — never commit anything under secrets/
 infra/.env
 infra/.env.*
 !infra/.env.example
-app/config/LocalSettings.php
-app/config/secrets/db.php
-app/config/secrets/*.local.php
-app/config/secrets/*.secret.php
+app/config/secrets/
+!app/config/secrets/*.example
 
 # Runtime / generated infrastructure state
 infra/caddy/data/
