@@ -1,0 +1,12 @@
+<?php
+
+$wgObjectCaches['redis'] = [
+    'class' => 'RedisBagOStuff',
+    'servers' => [ '127.0.0.1:6379' ],
+    'password' => 'replace_me',
+    'persistent' => true,
+];
+
+$wgMainCacheType = 'redis';
+$wgSessionCacheType = 'redis';
+$wgMainStash = 'redis';

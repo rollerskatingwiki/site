@@ -1,0 +1,9 @@
+[Unit]
+Description=Run MediaWiki jobs
+
+[Service]
+Type=oneshot
+User=wiki
+Group=wiki
+WorkingDirectory=/home/wiki/dev/wiki/app/current
+ExecStart=/usr/bin/php /home/wiki/dev/wiki/app/current/maintenance/run.php runJobs --maxjobs=100

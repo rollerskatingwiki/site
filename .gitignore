@@ -1,0 +1,52 @@
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Live secrets
+infra/.env
+infra/.env.*
+!infra/.env.example
+app/config/LocalSettings.php
+app/config/secrets/db.php
+app/config/secrets/*.local.php
+app/config/secrets/*.secret.php
+
+# Runtime / generated infrastructure state
+infra/caddy/data/
+infra/caddy/config/
+infra/caddy/log/
+infra/mariadb/data/
+infra/redis/data/
+infra/*.pid
+infra/*.sock
+
+# MediaWiki application runtime artifacts
+app/releases/
+app/shared/images/
+app/cache/
+app/log/
+
+# Backups and migration artifacts
+backups/
+*.sql
+*.sql.gz
+*.xml
+*.tar
+*.tar.gz
+*.tar.bz2
+*.zip
+
+# Generated inventory / temporary notes
+inventory/
+tmp/
+*.tmp
+
+# Dependency/vendor state created by extension installs
+vendor/
+composer.local.json
+composer.lock

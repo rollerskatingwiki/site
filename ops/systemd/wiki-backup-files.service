@@ -1,0 +1,7 @@
+[Unit]
+Description=Backup MediaWiki files
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/home/wiki/dev/wiki/ops/bin/backup-files.sh

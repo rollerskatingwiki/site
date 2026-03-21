@@ -1,0 +1,30 @@
+server {
+    listen 127.0.0.1:8081;
+    server_name rollerskating.wiki;
+
+    root /home/wiki/dev/wiki/app/current;
+    index index.php;
+
+    client_max_body_size 100M;
+
+    location / {
+        try_files $uri $uri/ /index.php?$args;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.3-fpm-wiki.sock;
+        fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
+        include fastcgi_params;
+    }
+
+    location ^~ /mw-config/ {
+        deny all;
+    }
+
+    location ^~ /images/ {
+        location ~ \.php$ {
+            deny all;
+        }
+    }
+}

@@ -1,0 +1,27 @@
+<?php
+
+require __DIR__ . '/secrets/db.php';
+
+$wgServer = 'https://rollerskating.wiki';
+$wgScriptPath = '';
+
+$wgEnableUploads = true;
+$wgJobRunRate = 0;
+
+$wgEmergencyContact = 'admin@example.com';
+$wgPasswordSender = 'wiki@example.com';
+
+// APCu is the intended first cache layer for this deployment.
+// MediaWiki will normally detect it automatically on a single host.
+// $wgMainCacheType = CACHE_ACCEL;
+
+// Set these explicitly if public editing and registration are not wanted.
+// $wgGroupPermissions['*']['edit'] = false;
+// $wgGroupPermissions['*']['createaccount'] = false;
+
+// Optional shared-cache examples if you need them later:
+// require __DIR__ . '/cache.memcached.php';
+// require __DIR__ . '/cache.redis.php';
+
+// Load non-bundled extensions here.
+// wfLoadExtension( 'TimedMediaHandler' );

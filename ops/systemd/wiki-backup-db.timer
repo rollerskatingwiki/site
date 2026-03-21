@@ -1,0 +1,9 @@
+[Unit]
+Description=Nightly MediaWiki DB backup
+
+[Timer]
+OnCalendar=03:15
+Persistent=true
+
+[Install]
+WantedBy=timers.target

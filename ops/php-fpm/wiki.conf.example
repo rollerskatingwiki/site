@@ -1,0 +1,20 @@
+[wiki]
+user = www-data
+group = www-data
+
+listen = /run/php/php8.3-fpm-wiki.sock
+listen.owner = www-data
+listen.group = www-data
+listen.mode = 0660
+
+pm = dynamic
+pm.max_children = 20
+pm.start_servers = 3
+pm.min_spare_servers = 2
+pm.max_spare_servers = 5
+
+chdir = /
+clear_env = no
+
+php_admin_value[open_basedir] = /home/wiki/dev/wiki/app/current/:/home/wiki/dev/wiki/app/config/:/home/wiki/dev/wiki/app/shared/:/tmp/
+php_admin_value[upload_tmp_dir] = /tmp

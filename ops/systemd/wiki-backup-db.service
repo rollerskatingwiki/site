@@ -1,0 +1,7 @@
+[Unit]
+Description=Backup MediaWiki MariaDB
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/home/wiki/dev/wiki/ops/bin/backup-db.sh

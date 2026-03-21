@@ -1,0 +1,4 @@
+wiki.example.com {
+	encode zstd gzip
+	reverse_proxy host.docker.internal:8081
+}
