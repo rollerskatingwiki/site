@@ -180,6 +180,43 @@ $wgGTagAnalyticsId = 'G-KJ17VH74JG';
 $wgGTagHonorDNT = true;
 $wgGTagTrackSensitivePages = false;
 
+# VisualEditor
+wfLoadExtension( 'VisualEditor' );
+
+# Make VisualEditor available to all users (logged-in get it by default,
+# logged-out can switch to it). Users can still toggle in preferences.
+$wgDefaultUserOptions['visualeditor-editor'] = 'visualeditor';
+
+# Enable the 2017 wikitext editor (modern source editor inside VE)
+$wgVisualEditorEnableWikitext = true;
+$wgDefaultUserOptions['visualeditor-newwikitext'] = 1;
+
+# Single edit tab — remembers last-used editor, defaults to visual
+$wgVisualEditorUseSingleEditTab = true;
+
+# Enable VisualEditor on Talk namespaces and Project namespace
+$wgVisualEditorAvailableNamespaces = [
+	'Talk' => true,
+	'Project' => true,
+	'Project_talk' => true,
+	'Help' => true,
+	'Help_talk' => true,
+];
+
+# Section editing in visual mode (desktop and mobile)
+$wgVisualEditorEnableVisualSectionEditing = true;
+
+# Citations: Cite extension + TemplateData for rich citation forms
+wfLoadExtension( 'Cite' );
+wfLoadExtension( 'TemplateData' );
+
+# Scribunto (Lua) + ParserFunctions — required by Wikipedia citation templates
+wfLoadExtension( 'Scribunto' );
+$wgScribuntoDefaultEngine = 'luastandalone';
+wfLoadExtension( 'ParserFunctions' );
+$wgPFEnableStringFunctions = true;
+wfLoadExtension( 'TemplateStyles' );
+
 # CAPTCHA — Cloudflare Turnstile (keys in secrets/SecretsSettings.php)
 wfLoadExtensions([ 'ConfirmEdit', 'ConfirmEdit/Turnstile' ]);
 $wgCaptchaClass = 'MediaWiki\\Extension\\ConfirmEdit\\Turnstile\\Turnstile';
