@@ -137,7 +137,10 @@ $wgEnableUploads = true;
 
 $wgFileExtensions = [ 'png', 'gif', 'jpg', 'jpeg', 'webp', 'pdf' ];
 
-# Public can read, but cannot upload.
+# Anonymous users: can read, cannot edit or upload anything.
+$wgGroupPermissions['*']['edit'] = false;
+$wgGroupPermissions['*']['createpage'] = false;
+$wgGroupPermissions['*']['createtalk'] = false;
 $wgGroupPermissions['*']['upload'] = false;
 $wgGroupPermissions['*']['reupload'] = false;
 $wgGroupPermissions['*']['reupload-shared'] = false;
@@ -167,9 +170,38 @@ wfLoadExtension( 'ApprovedRevs' );
 wfLoadExtension( 'UniversalLanguageSelector' );
 wfLoadExtension( 'Translate' );
 wfLoadExtension( 'TimedMediaHandler' );
+wfLoadExtension( 'GTag' );
 
 # Extension settings
 $wgMFDefaultSkinClass = 'SkinMinerva';
+
+# Google Analytics (GA4) via GTag extension
+$wgGTagAnalyticsId = 'G-KJ17VH74JG';
+$wgGTagHonorDNT = true;
+$wgGTagTrackSensitivePages = false;
+
+# CAPTCHA — Cloudflare Turnstile (keys in secrets/SecretsSettings.php)
+wfLoadExtensions([ 'ConfirmEdit', 'ConfirmEdit/Turnstile' ]);
+$wgCaptchaClass = 'MediaWiki\\Extension\\ConfirmEdit\\Turnstile\\Turnstile';
+$wgCaptchaTriggers['createaccount'] = true;
+$wgCaptchaTriggers['badlogin'] = true;
+$wgCaptchaTriggers['badloginperuser'] = true;
+
+# Allow site CSS on login/signup pages (needed to hide logo wordmark, etc.)
+# CSS/JS page editing is locked to sysop only to prevent abuse.
+$wgAllowSiteCSSOnRestrictedPages = true;
+$wgGroupPermissions['*']['editsitecss'] = false;
+$wgGroupPermissions['*']['editsitejs'] = false;
+$wgGroupPermissions['*']['editusercss'] = false;
+$wgGroupPermissions['*']['edituserjs'] = false;
+$wgGroupPermissions['user']['editsitecss'] = false;
+$wgGroupPermissions['user']['editsitejs'] = false;
+$wgGroupPermissions['autoconfirmed']['editsitecss'] = false;
+$wgGroupPermissions['autoconfirmed']['editsitejs'] = false;
+$wgGroupPermissions['sysop']['editsitecss'] = true;
+$wgGroupPermissions['sysop']['editsitejs'] = true;
+$wgGroupPermissions['sysop']['editusercss'] = true;
+$wgGroupPermissions['sysop']['edituserjs'] = true;
 
 # Footer: CC BY-NC-SA badge
 $wgFooterIcons['copyright']['copyright'] = [
