@@ -10,8 +10,6 @@ This directory contains a production-oriented MediaWiki deployment pack built ar
 
 Start with [docs/OPERATIONS.md](/Users/assisrmatheus/Developer/wiki/docs/OPERATIONS.md).
 
-If you are a coding agent or need the full architecture and live-environment context first, read [docs/AGENT_CONTEXT.md](/Users/assisrmatheus/Developer/wiki/docs/AGENT_CONTEXT.md) before making changes.
-
 ## Why this shape
 
 This keeps the MediaWiki application close to the official install and upgrade path, while still making Docker-managed service data easy to move or back up from one directory tree.
