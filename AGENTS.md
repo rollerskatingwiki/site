@@ -425,18 +425,40 @@ Key points:
 
 - app code should be owned by `wiki`
 - upload directory should be writable by `www-data`
-- `LocalSettings.php` and `db.php` must be readable by the web stack
+- `LocalSettings.php` and secrets files must be readable by the web stack
 - parent directories under `/home/wiki/...` must be traversable by nginx/PHP
+- **both files and their parent directories** must be group-accessible by `www-data`
+
+### Config File Permissions
+
+`LocalSettings.php` is committed to version control (it contains no secrets). It must still be readable by PHP-FPM.
+
+Required state:
+
+- `/home/wiki/dev/wiki/app/config/LocalSettings.php` — `wiki:www-data`, mode `640`
+- `/home/wiki/dev/wiki/app/config/` directory — `wiki:www-data` (or at least group-traversable by `www-data`)
+
+### Secrets File Permissions
+
+Secrets live in `app/config/secrets/` and are gitignored. The directory and every file PHP-FPM needs to read must be group-owned by `www-data`.
+
+Required state:
+
+- `/home/wiki/dev/wiki/app/config/secrets/` directory — `wiki:www-data` (group must have traverse permission)
+- `/home/wiki/dev/wiki/app/config/secrets/SecretsSettings.php` — `wiki:www-data`, mode `640`
+- `/home/wiki/dev/wiki/app/config/secrets/db.php` — `wiki:www-data`, mode `640`
 
 Important known failure:
 
-- MediaWiki displayed `LocalSettings.php not readable`
-- cause was permissions and/or group ownership on config files
+- PHP-FPM returned `Failed to open stream: Permission denied` for `SecretsSettings.php`
+- the file itself had correct ownership (`wiki:www-data`, `640`)
+- the cause was the **parent directory** `secrets/` being owned by `wiki:wiki` — `www-data` could not traverse into it
 
-Practical rule:
+Practical rules:
 
-- if `LocalSettings.php` is `640`, its group must be readable by the process serving the app
-- one workable model is `wiki:www-data` with mode `640`
+- if a file is `640 wiki:www-data`, its parent directory must also be group-accessible by `www-data`
+- one workable model is `wiki:www-data` on both the directory and files
+- always check directory ownership, not just file ownership
 
 Agents must be very careful not to tighten permissions so far that the app becomes unreadable.
 
@@ -454,6 +476,8 @@ After any edit to config files, agents **must** tell the operator to run:
 
 ```bash
 sudo chown wiki:www-data /home/wiki/dev/wiki/app/config/LocalSettings.php
+sudo chown wiki:www-data /home/wiki/dev/wiki/app/config/secrets/
+sudo chown wiki:www-data /home/wiki/dev/wiki/app/config/secrets/SecretsSettings.php
 sudo chown wiki:www-data /home/wiki/dev/wiki/app/config/secrets/db.php
 ```
 
