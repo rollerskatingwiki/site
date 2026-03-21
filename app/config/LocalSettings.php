@@ -159,6 +159,14 @@ $wgAutoConfirmCount = 10;
 $wgArticlePath = '/wiki/$1';
 $wgUsePathInfo = true;
 
-# MobileFrontend: mobile-optimized view using MinervaNeue skin
+# Extensions
 wfLoadExtension( 'MobileFrontend' );
+wfLoadExtension( 'Cargo' );
+wfLoadExtension( 'PageForms' );
+wfLoadExtension( 'ApprovedRevs' );
+wfLoadExtension( 'UniversalLanguageSelector' );
+wfLoadExtension( 'Translate' );
+wfLoadExtension( 'TimedMediaHandler' );
+
+# Extension settings
 $wgMFDefaultSkinClass = 'SkinMinerva';
