@@ -111,10 +111,10 @@ $wgLocaltimezone = "UTC";
 ## For attaching licensing metadata to pages, and displaying an
 ## appropriate copyright notice / icon. GNU Free Documentation
 ## License and Creative Commons licenses are supported so far.
-$wgRightsPage = ""; # Set to the title of a wiki page that describes your license/copyright
-$wgRightsUrl = "";
-$wgRightsText = "";
-$wgRightsIcon = "";
+$wgRightsPage = "";
+$wgRightsUrl = "https://creativecommons.org/licenses/by-nc-sa/4.0";
+$wgRightsText = "Creative Commons Attribution-NonCommercial-ShareAlike 4.0 License";
+$wgRightsIcon = "$wgResourceBasePath/resources/assets/cc-by-nc-sa-light.svg";
 
 # Path to the GNU diff3 utility. Used for conflict resolution.
 $wgDiff3 = "/usr/bin/diff3";
@@ -170,3 +170,14 @@ wfLoadExtension( 'TimedMediaHandler' );
 
 # Extension settings
 $wgMFDefaultSkinClass = 'SkinMinerva';
+
+# Footer: CC BY-NC-SA badge
+$wgFooterIcons['copyright']['copyright'] = [
+	'src' => "$wgResourceBasePath/resources/assets/cc-by-nc-sa-light.svg",
+	'url' => 'https://creativecommons.org/licenses/by-nc-sa/4.0',
+	'alt' => 'Creative Commons Attribution-NonCommercial-ShareAlike 4.0 License',
+	'width' => 88,
+	'height' => 31,
+];
+
+
