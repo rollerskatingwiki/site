@@ -11,3 +11,7 @@ mkdir -p "${DEST_DIR}"
 sudo -u wiki php "${BASE}/app/current/maintenance/run.php" dumpBackup --full > "${DEST_FILE}"
 
 echo "wrote ${DEST_FILE}"
+
+RETAIN_DAYS="${RETAIN_DAYS:-14}"
+find "${DEST_DIR}" -maxdepth 1 -name '*.xml' -type f -mtime "+${RETAIN_DAYS}" -delete
+echo "pruned backups older than ${RETAIN_DAYS} days"

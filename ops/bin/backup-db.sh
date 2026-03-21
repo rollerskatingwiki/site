@@ -27,3 +27,7 @@ docker exec -e MYSQL_PWD="${MARIADB_PASSWORD}" wiki-mariadb \
   mediawiki | gzip -9 > "${DEST_FILE}"
 
 echo "wrote ${DEST_FILE}"
+
+RETAIN_DAYS="${RETAIN_DAYS:-14}"
+find "${DEST_DIR}" -maxdepth 1 -name '*.sql.gz' -type f -mtime "+${RETAIN_DAYS}" -delete
+echo "pruned backups older than ${RETAIN_DAYS} days"
