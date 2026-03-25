@@ -181,6 +181,7 @@ $wgGTagHonorDNT = true;
 $wgGTagTrackSensitivePages = false;
 
 # VisualEditor
+wfLoadExtension( 'Echo' );
 wfLoadExtension( 'VisualEditor' );
 
 # Make VisualEditor available to all users (logged-in get it by default,
