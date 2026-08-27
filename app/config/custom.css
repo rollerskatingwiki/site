@@ -1,0 +1,14 @@
+/* Hide site name text in navigation, keep page titles */
+.mw-logo-wordmark {
+    display: none;
+}
+
+/* Add left padding to logo icon on wide screens */
+@media (min-width: 1120px) {
+    .mw-logo-icon {
+        padding-left: 1rem;
+    }
+    .cdx-typeahead-search--show-thumbnail.cdx-typeahead-search--auto-expand-width:not(.cdx-typeahead-search--expanded) {
+        margin-left: 0;
+    }
+}

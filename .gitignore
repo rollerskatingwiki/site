@@ -48,3 +48,4 @@ tmp/
 vendor/
 composer.local.json
 composer.lock
+.claude/

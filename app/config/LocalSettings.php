@@ -49,6 +49,11 @@ $wgLogos = [
 	'1x' => "$wgResourceBasePath/resources/assets/logo-1x.png",
 	'2x' => "$wgResourceBasePath/resources/assets/logo-2x.png",
 	'icon' => "$wgResourceBasePath/resources/assets/logo-icon.png",
+	'wordmark' => [
+		'src' => "$wgResourceBasePath/resources/assets/logo-icon.png",
+		'width' => 32,
+		'height' => 32,
+	],
 ];
 $wgFavicon = "$wgResourceBasePath/resources/assets/favicon.ico";
 
