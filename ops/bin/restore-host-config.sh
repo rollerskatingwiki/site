@@ -12,6 +12,8 @@ install -D -m 0644 "${BASE}/ops/systemd/wiki-backup-db.service" /etc/systemd/sys
 install -D -m 0644 "${BASE}/ops/systemd/wiki-backup-db.timer" /etc/systemd/system/wiki-backup-db.timer
 install -D -m 0644 "${BASE}/ops/systemd/wiki-backup-files.service" /etc/systemd/system/wiki-backup-files.service
 install -D -m 0644 "${BASE}/ops/systemd/wiki-backup-files.timer" /etc/systemd/system/wiki-backup-files.timer
+install -D -m 0644 "${BASE}/ops/systemd/wiki-backup-xml.service" /etc/systemd/system/wiki-backup-xml.service
+install -D -m 0644 "${BASE}/ops/systemd/wiki-backup-xml.timer" /etc/systemd/system/wiki-backup-xml.timer
 
 systemctl daemon-reload
 echo "restored host timers; start the stack with: cd ${DOCKER_DIR} && docker compose up -d mariadb wiki wiki-web wiki-jobrunner wiki-sitemap"

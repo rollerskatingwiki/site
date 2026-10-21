@@ -33,7 +33,8 @@ docker exec -u www-data wiki php maintenance/run.php <script>  # anything that w
 - Extensions: add or bump the `ADD` line in `~/dev/docker/wiki/Dockerfile`, load the extension with `wfLoadExtension()` in LocalSettings, and run `update.sh`. If the extension loads its own composer autoloader, add it to the Dockerfile's `composer install` loop.
 - Updates: `update.sh` takes a backup, runs `build --pull`, recreates the containers, runs `update.php` and smoke-tests the result. `wiki-update.timer` runs it at 04:30 America/Toronto. Watchtower excludes the wiki containers, so `update.sh` is the one path that updates them.
 - Rollback: if the smoke test fails, `update.sh` rolls back to the `:previous` images. To roll back by hand, run `docker tag local/rollerskating-wiki:previous local/rollerskating-wiki:1.43`, repeat it for `-web`, then run `docker compose up -d --force-recreate wiki wiki-web wiki-jobrunner wiki-sitemap`.
-- Open issues: email has no SMTP, and MediaWiki sees Caddy's IP as the client IP.
+- Visitor IPs: Caddy trusts Cloudflare's ranges and passes `CF-Connecting-IP` on, and nginx turns it into the client address. AGENTS.md ("Visitor IPs and email") has the details.
+- Email is off (`$wgEnableEmail = false`).
 
 Primary references:
 
@@ -357,8 +358,10 @@ Systemd automation:
 - [ops/systemd/wiki-backup-db.timer](../ops/systemd/wiki-backup-db.timer)
 - [ops/systemd/wiki-backup-files.service](../ops/systemd/wiki-backup-files.service)
 - [ops/systemd/wiki-backup-files.timer](../ops/systemd/wiki-backup-files.timer)
+- [ops/systemd/wiki-backup-xml.service](../ops/systemd/wiki-backup-xml.service)
+- [ops/systemd/wiki-backup-xml.timer](../ops/systemd/wiki-backup-xml.timer)
 
-`wiki-backup-db.timer` runs at 03:15 UTC, and `wiki-backup-files.timer` runs at 03:45 UTC as root. No timer runs `backup-xml.sh`, so you run it by hand when you want an XML export.
+As root, `wiki-backup-db.timer` runs at 03:15 UTC, `wiki-backup-xml.timer` at 03:30 UTC and `wiki-backup-files.timer` at 03:45 UTC.
 
 Install:
 
@@ -367,8 +370,10 @@ sudo cp /home/wiki/dev/wiki/ops/systemd/wiki-backup-db.service /etc/systemd/syst
 sudo cp /home/wiki/dev/wiki/ops/systemd/wiki-backup-db.timer /etc/systemd/system/
 sudo cp /home/wiki/dev/wiki/ops/systemd/wiki-backup-files.service /etc/systemd/system/
 sudo cp /home/wiki/dev/wiki/ops/systemd/wiki-backup-files.timer /etc/systemd/system/
+sudo cp /home/wiki/dev/wiki/ops/systemd/wiki-backup-xml.service /etc/systemd/system/
+sudo cp /home/wiki/dev/wiki/ops/systemd/wiki-backup-xml.timer /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now wiki-backup-db.timer wiki-backup-files.timer
+sudo systemctl enable --now wiki-backup-db.timer wiki-backup-xml.timer wiki-backup-files.timer
 ```
 
 `backup-db.sh` and `restore-db.sh` read `MARIADB_PASSWORD` from `infra/.env` if it exists, otherwise from `app/config/secrets/db.php`. The server has no `infra/.env`, so both scripts use `db.php`.
@@ -402,4 +407,4 @@ Keep these constraints in place:
 - Run as few extensions as you can.
 - Disable anonymous editing and self-service registration unless you need them.
 
-Two gaps remain open. Email has no SMTP, so the wiki can't send mail. MediaWiki sees Caddy's IP as the client IP, so IP blocks and logs point at Caddy instead of the visitor.
+MediaWiki sees each visitor's real IP through Cloudflare and Caddy, so IP blocks and throttles hit the right person. Email stays off until you configure SMTP.

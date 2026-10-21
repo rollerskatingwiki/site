@@ -41,5 +41,6 @@ docker inspect wiki-jobrunner wiki-sitemap --format '{{.Name}} {{.State.Status}}
 systemctl is-enabled wiki-update.timer || true
 systemctl is-enabled wiki-backup-db.timer || true
 systemctl is-enabled wiki-backup-files.timer || true
+systemctl is-enabled wiki-backup-xml.timer || true
 
 echo "post-restore checks completed"

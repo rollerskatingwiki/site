@@ -59,15 +59,15 @@ $wgFavicon = "$wgResourceBasePath/resources/assets/favicon.ico";
 
 ## UPO means: this is also a user preference option
 
-$wgEnableEmail = true;
-$wgEnableUserEmail = true; # UPO
+$wgEnableEmail = false;
+$wgEnableUserEmail = false; # UPO
 
 $wgEmergencyContact = "";
 $wgPasswordSender = "";
 
 $wgEnotifUserTalk = false; # UPO
 $wgEnotifWatchlist = false; # UPO
-$wgEmailAuthentication = true;
+$wgEmailAuthentication = false;
 
 ## Database settings — credentials are in secrets/SecretsSettings.php
 

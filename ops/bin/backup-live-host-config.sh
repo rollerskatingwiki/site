@@ -21,6 +21,8 @@ paths=(
   "/etc/systemd/system/wiki-backup-db.timer"
   "/etc/systemd/system/wiki-backup-files.service"
   "/etc/systemd/system/wiki-backup-files.timer"
+  "/etc/systemd/system/wiki-backup-xml.service"
+  "/etc/systemd/system/wiki-backup-xml.timer"
 )
 
 existing=()

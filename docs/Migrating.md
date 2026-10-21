@@ -322,11 +322,11 @@ Caddy gets its certificate through the Cloudflare DNS challenge with `CLOUDFLARE
 
 ```bash
 sudo /home/wiki/dev/wiki/ops/bin/restore-host-config.sh
-sudo systemctl enable --now wiki-backup-db.timer wiki-backup-files.timer wiki-update.timer
+sudo systemctl enable --now wiki-backup-db.timer wiki-backup-xml.timer wiki-backup-files.timer wiki-update.timer
 sudo /home/wiki/dev/wiki/ops/bin/post-restore-check.sh rollerskating.wiki
 ```
 
-`restore-host-config.sh` installs `wiki-update` from `/home/assisr/dev/docker/wiki/systemd` and the two backup units from `ops/systemd`. Leave `wiki-jobs` and `wiki-sitemap` in `ops/systemd` alone; the containers do that work now.
+`restore-host-config.sh` installs `wiki-update` from `/home/assisr/dev/docker/wiki/systemd` and the three backup units (DB, XML, files) from `ops/systemd`. Leave `wiki-jobs` and `wiki-sitemap` in `ops/systemd` alone; the containers do that work now.
 
 `post-restore-check.sh` prints the containers, `nginx -t` inside `wiki-web`, the PHP and MediaWiki versions, the origin status and the timer states. It exits non-zero if the origin returns an error such as a 502; on success the origin line prints `200`.
 

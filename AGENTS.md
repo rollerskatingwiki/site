@@ -79,14 +79,15 @@ The container `dns` runs ddclient and updates Cloudflare records for `assisr.com
 - Watchtower excludes `wiki`, `wiki-web`, `wiki-jobrunner`, `wiki-sitemap` and `wiki-mariadb`. `update.sh` is their updater.
 - To bump Cargo, PageForms or ApprovedRevs, edit the tag in the Dockerfile and run `update.sh`. For a new MediaWiki LTS, change `FROM`, the `REL1_xx` branches and the image tags, then follow Manual:Upgrading.
 
-### Cutover status
+### Cutover
 
-The host `wiki-jobs.timer`, `wiki-sitemap.timer`, host nginx and host `php8.4-fpm` get disabled at cutover. Cutover waits for a `mediawiki:1.43-fpm` image with PHP 8.3.36, the release that fixes CVE-2026-109618/109619.
+You switched the live site to the containers on 2026-10-21 at 17:44 UTC, on `mediawiki:1.43-fpm` with PHP 8.3.36 (the CVE-2026-109618/109619 fix). The host `nginx`, `php8.4-fpm`, `wiki-jobs.timer` and `wiki-sitemap.timer` units stay disabled. To roll back to the host stack, stop `wiki-web` and re-enable those units, but host PHP gets no security fixes on Ubuntu 25.10.
 
-### Known open issues
+### Visitor IPs and email
 
-- Email: `$wgEnableEmail` is on, `$wgPasswordSender` is empty, and the server has no SMTP or sendmail.
-- MediaWiki sees Caddy's IP instead of the real client IP.
+Caddy trusts Cloudflare's edge ranges (global `servers { trusted_proxies … }`, list from https://www.cloudflare.com/ips) and takes the visitor's IP from `CF-Connecting-IP`. The wiki block sends that IP as `X-Forwarded-For`, and `wiki-web`'s nginx (`set_real_ip_from 172.16.0.0/12`) turns it into the client address, so MediaWiki logs, blocks and throttles the real visitor. A forged header from outside Cloudflare's ranges gets ignored. If Cloudflare publishes new ranges, update the list in the Caddyfile and run `docker exec caddy caddy reload --config /etc/caddy/Caddyfile`.
+
+Email is off on purpose: `$wgEnableEmail`, `$wgEnableUserEmail` and `$wgEmailAuthentication` are `false`, so the wiki offers no password reset or email confirmation. Configure `$wgSMTP` and `$wgPasswordSender` before you turn it back on.
 
 ### Rules
 
@@ -217,12 +218,13 @@ The first install broke when `--dbserver` contained `host:port` and the installe
 
 ## Backups
 
-Host timers, both running as root:
+Host timers, all running as root:
 
 - `wiki-backup-db`: 03:15 UTC
+- `wiki-backup-xml`: 03:30 UTC
 - `wiki-backup-files`: 03:45 UTC
 
-No timer runs XML backups. Keep a copy of the backups off the host.
+Keep a copy of the backups off the host.
 
 The backup set covers:
 
