@@ -1,6 +1,6 @@
 # Rollerskating Wiki: Agent Context
 
-Last updated: 2026-03-21
+Last updated: 2026-10-21
 
 This document is for LLM coding agents and operators. It explains the current architecture, the intended deployment model, the known drift between the deployment pack and the live server, and the operational rules that should be preserved.
 
@@ -232,9 +232,15 @@ PHP_VERSION="$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;')"
 echo "php${PHP_VERSION}-fpm"
 ```
 
-For the dedicated socket path, this deployment pack now prefers a version-agnostic custom socket:
+For the dedicated socket path, this deployment pack prefers a version-agnostic custom socket:
 
 - `/run/php/php-fpm-wiki.sock`
+
+But the live pool and nginx use `/run/php/php8.4-fpm-wiki.sock` (verified 2026-10-21), and the `ops/` examples match live. Change both together if you migrate.
+
+### open_basedir and Scribunto
+
+The pool's `open_basedir` must include `/dev/null`: Scribunto's LuaStandalone opens it as the Lua binary's stderr, and without it every `{{#invoke:}}` fails. Keep `$wgGitInfoCacheDirectory = '';` in `LocalSettings.php` so GitInfo doesn't probe `/gitinfo` outside `open_basedir`.
 
 ### Upload Settings
 
@@ -363,9 +369,9 @@ This is important context for future rebuilds or automation work.
 
 ### Current Version
 
-The installation was based on:
+The installation was based on MediaWiki `1.43.6` and upgraded to `1.43.11` on 2026-10-21.
 
-- MediaWiki `1.43.6`
+Custom logo, favicon and license icon files live in the release's `resources/assets/` (referenced from `LocalSettings.php`). The copies in `app/shared/assets/` are older and not what is served.
 
 ### Site Identity
 

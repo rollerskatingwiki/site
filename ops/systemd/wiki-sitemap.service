@@ -1,0 +1,9 @@
+[Unit]
+Description=Generate MediaWiki sitemap
+
+[Service]
+Type=oneshot
+User=wiki
+Group=wiki
+WorkingDirectory=/home/wiki/dev/wiki/app/current
+ExecStart=/home/wiki/dev/wiki/ops/bin/generate-sitemap.sh

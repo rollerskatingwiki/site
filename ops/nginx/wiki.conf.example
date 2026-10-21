@@ -1,21 +1,48 @@
 server {
-    listen 127.0.0.1:8081;
-    server_name rollerskating.wiki;
+    # Docker bridge IP so the caddy container can reach it via host.docker.internal
+    listen 172.17.0.1:7734;
+    server_name rollerskating.wiki www.rollerskating.wiki;
 
     root /home/wiki/dev/wiki/app/current;
     index index.php;
 
-    client_max_body_size 100M;
+    client_max_body_size 50M;
+
+    add_header X-Content-Type-Options nosniff always;
+
+    # Hidden files, e.g. .git in extensions cloned from Gerrit
+    location ~ /\. {
+        deny all;
+    }
+
+    location ^~ /wiki/ {
+        rewrite ^/wiki/(?<pagename>.*)$ /index.php;
+    }
+
+    location ^~ /sitemap/ {
+        root /home/wiki/dev/wiki/app/shared;
+    }
 
     location / {
         try_files $uri $uri/ /index.php?$args;
     }
 
-    location ~ \.php$ {
+    # REST API routes by REQUEST_URI, e.g. /rest.php/v1/search/title
+    location ^~ /rest.php/ {
+        try_files $uri $uri/ /rest.php?$query_string;
+    }
+
+    # Only MediaWiki's web entry points run PHP
+    location ~ ^/(index|load|api|thumb|opensearch_desc|rest|img_auth)\.php$ {
         include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/run/php/php8.3-fpm-wiki.sock;
+        fastcgi_pass unix:/run/php/php8.4-fpm-wiki.sock;
         fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
         include fastcgi_params;
+    }
+
+    # Any other .php is neither executed nor served as source
+    location ~ \.php$ {
+        return 404;
     }
 
     location ^~ /mw-config/ {
@@ -23,8 +50,19 @@ server {
     }
 
     location ^~ /images/ {
+        location ~ /\. {
+            deny all;
+        }
         location ~ \.php$ {
             deny all;
         }
+        location ~* \.(html|htm|shtml|phtml)$ {
+            types { }
+            default_type text/plain;
+        }
+    }
+
+    location ^~ /images/deleted/ {
+        deny all;
     }
 }

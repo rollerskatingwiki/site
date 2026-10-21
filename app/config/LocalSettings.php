@@ -256,3 +256,4 @@ $wgFooterIcons['copyright']['copyright'] = [
 ];
 
 
+$wgGitInfoCacheDirectory = '';

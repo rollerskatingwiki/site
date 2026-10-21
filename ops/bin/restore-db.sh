@@ -14,14 +14,22 @@ if [[ -z "${DB_FILE}" || ! -f "${DB_FILE}" ]]; then
   exit 1
 fi
 
-if [[ ! -f "${ENV_FILE}" ]]; then
-  echo "missing ${ENV_FILE}" >&2
-  exit 1
+if [[ -f "${ENV_FILE}" ]]; then
+  set -a
+  source "${ENV_FILE}"
+  set +a
 fi
 
-set -a
-source "${ENV_FILE}"
-set +a
+# Live server has no infra/.env; MediaWiki's own db.php is the source of truth
+DB_SECRETS="${BASE}/app/config/secrets/db.php"
+if [[ -z "${MARIADB_PASSWORD:-}" && -f "${DB_SECRETS}" ]]; then
+  MARIADB_PASSWORD="$(php -r 'include $argv[1]; echo $wgDBpassword;' "${DB_SECRETS}")"
+fi
+
+if [[ -z "${MARIADB_PASSWORD:-}" ]]; then
+  echo "no DB password: set MARIADB_PASSWORD in ${ENV_FILE} or provide ${DB_SECRETS}" >&2
+  exit 1
+fi
 
 zcat "${DB_FILE}" | docker exec -i -e MYSQL_PWD="${MARIADB_PASSWORD}" wiki-mariadb \
   mariadb -umediawiki mediawiki

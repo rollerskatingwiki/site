@@ -7,7 +7,7 @@ if [[ $# -lt 1 ]]; then
 fi
 
 VERSION="$1"
-BASE="/home/wiki/dev/wiki"
+BASE="${BASE:-/home/wiki/dev/wiki}"
 RELEASES_DIR="${BASE}/app/releases"
 RELEASE_DIR="${RELEASES_DIR}/mediawiki-${VERSION}"
 ARCHIVE="mediawiki-${VERSION}.tar.gz"
@@ -26,7 +26,10 @@ curl -fLO "${URL}"
 tar -xzf "${ARCHIVE}"
 rm -f "${ARCHIVE}"
 
-ln -sfn "${BASE}/app/shared/images" "${RELEASE_DIR}/images"
+# The tarball ships its own images/ (README, .htaccess); ln -sfn onto it would
+# create images/images, so replace it with the shared uploads dir
+rm -rf "${RELEASE_DIR}/images"
+ln -s "${BASE}/app/shared/images" "${RELEASE_DIR}/images"
 
 if [[ -e "${BASE}/app/config/LocalSettings.php" ]]; then
   ln -sfn "${BASE}/app/config/LocalSettings.php" "${RELEASE_DIR}/LocalSettings.php"

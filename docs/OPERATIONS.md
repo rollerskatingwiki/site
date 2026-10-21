@@ -1,6 +1,6 @@
 # MediaWiki Operations
 
-Last reviewed: 2026-03-16
+Last reviewed: 2026-10-21
 
 This runbook is intentionally anchored to official MediaWiki documentation and then narrowed to one deployment shape:
 
@@ -282,8 +282,16 @@ Standard workflow:
 Scripted example:
 
 ```bash
-sudo -u wiki /home/wiki/dev/wiki/ops/bin/upgrade-core.sh 1.43.7
+sudo -u wiki /home/wiki/dev/wiki/ops/bin/upgrade-core.sh 1.43.12
+# test the new release, then:
+sudo -u wiki /home/wiki/dev/wiki/ops/bin/upgrade-core.sh 1.43.12 --switch
 ```
+
+The first run backs up the DB and files, deploys the release, carries over only non-bundled extensions/skins (bundled ones come from the new tarball), copies custom `resources/assets/` files, and runs `update`. It does not switch `app/current`; `--switch` does that atomically.
+
+Carried-over extensions keep their old code: update each one to the matching `REL1_xx` branch or release tag. `TimedMediaHandler` and `Translate` load their own `vendor/`, so run `composer install --no-dev` in those directories after updating them.
+
+MediaWiki's `updatelog` keys include the absolute patch path, so a few extension schema patches (Translate, TimedMediaHandler) re-apply once per new release directory. They are idempotent.
 
 ## Maintenance
 
@@ -333,6 +341,17 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now wiki-backup-db.timer wiki-backup-files.timer
 ```
 
+`backup-db.sh` and `restore-db.sh` read `MARIADB_PASSWORD` from `infra/.env` if it exists, otherwise from `app/config/secrets/db.php`.
+
+Sitemap (daily, as `wiki`):
+
+```bash
+sudo cp /home/wiki/dev/wiki/ops/systemd/wiki-sitemap.service /etc/systemd/system/
+sudo cp /home/wiki/dev/wiki/ops/systemd/wiki-sitemap.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now wiki-sitemap.timer
+```
+
 Useful extra backups:
 
 - encrypted off-host copies of `backups/`
@@ -344,8 +363,9 @@ Useful extra backups:
 Keep these constraints in place:
 
 - Only Caddy is publicly reachable.
-- Keep host nginx bound to `127.0.0.1`.
-- Keep MariaDB bound to `127.0.0.1:3307` only.
+- Keep host nginx bound to the Docker bridge IP (`172.17.0.1:7734`), not `0.0.0.0`; Caddy reaches it as `host.docker.internal:7734`.
+- Keep MariaDB bound to `127.0.0.1:4938` only.
+- Only MediaWiki's entry points (`index`, `load`, `api`, `rest`, `thumb`, `opensearch_desc`, `img_auth`) run PHP; see `ops/nginx/wiki.conf.example`.
 - Keep Cloudflare on `Full (strict)`.
 - Deny PHP execution from uploads.
 - Block `/mw-config/` after installation.
