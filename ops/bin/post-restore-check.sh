@@ -9,11 +9,12 @@ docker ps --format 'table {{.Names}}\t{{.Status}}'
 
 echo
 echo "[nginx config test]"
-nginx -t
+docker exec wiki-web nginx -t
 
 echo
-echo "[current release]"
-readlink -f "${BASE}/app/current"
+echo "[versions]"
+docker exec wiki php -r 'echo "PHP ", PHP_VERSION, PHP_EOL;'
+echo 'echo "MediaWiki ", MW_VERSION, PHP_EOL;' | docker exec -i wiki php maintenance/run.php eval
 
 echo
 echo "[config]"
@@ -25,7 +26,8 @@ ls -la "${BASE}/app/shared/images" | head -n 20
 
 echo
 echo "[local origin]"
-curl -I http://127.0.0.1:8081/
+# -f: a 502 from a dead PHP container fails the check
+curl -fsS -o /dev/null -w '%{http_code}\n' -H 'Host: rollerskating.wiki' http://172.17.0.1:7734/wiki/Main_Page
 
 if [[ -n "${DOMAIN}" ]]; then
   echo
@@ -34,8 +36,9 @@ if [[ -n "${DOMAIN}" ]]; then
 fi
 
 echo
-echo "[timers]"
-systemctl is-enabled wiki-jobs.timer || true
+echo "[background containers and timers]"
+docker inspect wiki-jobrunner wiki-sitemap --format '{{.Name}} {{.State.Status}}' || true
+systemctl is-enabled wiki-update.timer || true
 systemctl is-enabled wiki-backup-db.timer || true
 systemctl is-enabled wiki-backup-files.timer || true
 

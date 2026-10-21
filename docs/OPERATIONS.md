@@ -2,13 +2,38 @@
 
 Last reviewed: 2026-10-21
 
-This runbook is intentionally anchored to official MediaWiki documentation and then narrowed to one deployment shape:
+This runbook follows the official MediaWiki documentation and narrows it to one deployment. If this file conflicts with the official docs, trust the docs.
 
-- host MediaWiki
-- host `nginx`
-- host `php-fpm`
-- Docker `caddy`
-- Docker `mariadb`
+Since 2026-10-21 the wiki runs in Docker. The compose file is `~/dev/docker/docker-compose-wiki.yml`, part of a shared stack that `COMPOSE_FILE` in `~/dev/docker/.env` pulls in. Build files live in `~/dev/docker/wiki/`.
+
+- `wiki`: PHP-FPM, built from Docker Hub `mediawiki:1.43-fpm` (PHP 8.3, MediaWiki 1.43.11)
+- `wiki-web`: nginx (`nginx:stable`), published on `172.17.0.1:7734`
+- `wiki-jobrunner`: runs the job queue
+- `wiki-sitemap`: regenerates the sitemap once a day
+- Docker `mariadb` (`wiki-mariadb`): MariaDB 11.8.9 on `127.0.0.1:4938`
+- Docker `caddy`, which proxies to `host.docker.internal:7734`. It lives in `~/dev/docker` and uses its own Cloudflare token, `CLOUDFLARE_API_TOKEN_WIKI`.
+
+The compose file and Caddyfile under this repo's `infra/` are outdated examples, and the live stack doesn't use them. AGENTS.md ("Docker Deployment") explains the architecture and the reasoning. The Install and Upgrades sections below describe the pre-Docker host install (host nginx + php-fpm); you'd follow them to roll back to it.
+
+## Docker operations
+
+```bash
+cd ~/dev/docker
+docker compose ps wiki wiki-web wiki-jobrunner wiki-sitemap
+docker compose logs -f wiki wiki-web               # PHP and nginx logs
+docker exec wiki php maintenance/run.php showJobs  # read-only maintenance
+docker exec -u www-data wiki php maintenance/run.php <script>  # anything that writes files
+~/dev/docker/wiki/update.sh                         # rebuild + redeploy (also daily via wiki-update.timer)
+```
+
+- Settings: edit `app/config/LocalSettings.php` as before. The containers mount it read-only, and PHP rereads it within 60 s (opcache revalidation), so you don't need a rebuild.
+- Container-only overrides (DB host, Lua engine, ffmpeg, job runner): `~/dev/docker/wiki/LocalSettings.php`. This wrapper sets the DB host, LuaSandbox, the ffmpeg path and `$wgJobRunRate = 0`.
+- DB credentials: `app/config/secrets/SecretsSettings.php`, with a copy in `app/config/secrets/db.php`.
+- PHP limits: the image's php.ini allows 50M uploads and posts, 256M of memory and 120 s of execution. OPcache gets 256M, and the image ships APCu.
+- Extensions: add or bump the `ADD` line in `~/dev/docker/wiki/Dockerfile`, load the extension with `wfLoadExtension()` in LocalSettings, and run `update.sh`. If the extension loads its own composer autoloader, add it to the Dockerfile's `composer install` loop.
+- Updates: `update.sh` takes a backup, runs `build --pull`, recreates the containers, runs `update.php` and smoke-tests the result. `wiki-update.timer` runs it at 04:30 America/Toronto. Watchtower excludes the wiki containers, so `update.sh` is the one path that updates them.
+- Rollback: if the smoke test fails, `update.sh` rolls back to the `:previous` images. To roll back by hand, run `docker tag local/rollerskating-wiki:previous local/rollerskating-wiki:1.43`, repeat it for `-web`, then run `docker compose up -d --force-recreate wiki wiki-web wiki-jobrunner wiki-sitemap`.
+- Open issues: email has no SMTP, and MediaWiki sees Caddy's IP as the client IP.
 
 Primary references:
 
@@ -27,49 +52,46 @@ Primary references:
 
 ## Database choice
 
-Use `MariaDB` unless you have a strong reason to standardize on MySQL instead.
+Use `MariaDB` unless you have a strong reason to standardize on MySQL. The live stack runs MariaDB 11.8.9.
 
-Reason:
+- MediaWiki's docs recommend `MariaDB / MySQL`.
+- Wikimedia runs MariaDB.
 
-- MediaWiki officially recommends `MariaDB / MySQL`.
-- Wikimedia uses MariaDB.
-- For MediaWiki specifically, MariaDB is the safer default choice.
-
-This is not a blanket claim that MariaDB is always faster than MySQL in every workload. It is the lower-risk default for this stack.
+For MediaWiki, MariaDB is the lower-risk default. MySQL may win some benchmarks, and that trade is fine for this stack.
 
 ## Caching
 
-The chosen baseline for this deployment is:
+The baseline for this deployment:
 
-- PHP `OPcache` on the host
-- `APCu` on the host for MediaWiki's local object cache
+- PHP `OPcache` (256M) in the `wiki` image
+- `APCu` in the `wiki` image, as MediaWiki's local object cache
 - Cloudflare for TLS, shielding, and static asset caching
 - no `Memcached` for now
 - no `Redis` for now
 
-The official MediaWiki docs split caching into separate layers. Do not treat Cloudflare, APCu, Memcached, and Redis as if they solve the same problem.
+MediaWiki's docs split caching into separate layers. Cloudflare, APCu, Memcached and Redis each solve a different problem, so you can't swap one for another.
 
-Officially documented options relevant to your setup:
+Options the official docs cover:
 
-- PHP opcode cache: OPcache. This is the recommended PHP bytecode cache.
-- Local server object cache: APCu is the normal local cache on a single host.
-- Main object cache: Memcached is the canonical recommendation in the performance docs.
-- Custom object cache backend: Redis is officially documented and supported via `$wgObjectCaches`.
+- PHP opcode cache: OPcache, the recommended PHP bytecode cache.
+- Local server object cache: APCu, the standard local cache on a single host.
+- Main object cache: Memcached, the canonical recommendation in the performance docs.
+- Custom object cache backend: Redis, documented and supported via `$wgObjectCaches`.
 - Fallback object cache: the database via `CACHE_DB`, which is slower.
 - Anonymous page-view caching proxy: Varnish or nginx FastCGI cache.
 - CDN/proxy layer: MediaWiki supports CDN-style page caching via `$wgUseCdn` and related settings.
 
 Recommended order for this deployment:
 
-1. Always enable OPcache and install APCu on the host.
+1. Enable OPcache and APCu. The `wiki` image ships both.
 2. Start without Cloudflare page caching.
-3. If the wiki is small or moderate, APCu alone is often enough to start.
-4. Add Redis or Memcached only if real usage shows the need for a shared cache layer.
-5. Only enable proxy/page caching for anonymous traffic when you are ready to manage purge behavior correctly.
+3. For a small or moderate wiki, APCu alone covers the start.
+4. Add Redis or Memcached once real usage shows you need a shared cache layer.
+5. Turn on proxy/page caching for anonymous traffic once you can manage purges.
 
 ### Cloudflare
 
-Cloudflare is useful here for:
+Cloudflare handles these jobs here:
 
 - TLS termination in front of your origin
 - DDoS and bot mitigation
@@ -77,19 +99,19 @@ Cloudflare is useful here for:
 
 Be conservative with whole-page caching:
 
-- Do not blindly enable `Cache Everything` for a wiki with logged-in users.
-- Logged-in and personalized responses should not be edge-cached as generic public pages.
-- If you want anonymous page caching, use MediaWiki's CDN-aware settings deliberately and test purge behavior.
+- Don't enable `Cache Everything` for a wiki with logged-in users.
+- Keep logged-in and personalized responses out of the edge cache.
+- For anonymous page caching, configure MediaWiki's CDN-aware settings with care and test purges before you rely on them.
 
 ### OPcache and APCu
 
-Install on the host:
+The `wiki` image enables OPcache and includes APCu, and MediaWiki auto-detects the local-server cache backend. APCu is the first MediaWiki cache layer to enable on a single host.
+
+On the pre-Docker host install, you installed APCu with this package and enabled OPcache in the PHP-FPM configuration:
 
 ```bash
 sudo apt install -y php-apcu
 ```
-
-`OPcache` should be enabled in your PHP-FPM configuration. `APCu` is the first MediaWiki cache layer to enable on a single host. MediaWiki auto-detects the local-server cache backend.
 
 See also:
 
@@ -97,17 +119,14 @@ See also:
 
 ### Memcached
 
-This is the canonical shared object-cache option in the official performance docs. It is a good choice if you want a central cache for one or more app servers.
+The official performance docs name Memcached as the canonical shared object cache. Pick it if you want a central cache for one or more app servers.
 
-Security warning from the official docs:
+The docs warn that Memcached has no authentication. Keep it off public networks.
 
-- Memcached has no authentication.
-- It must never be publicly exposed.
+Examples in this deployment pack (the compose override targets the outdated `infra/docker-compose.yml`, so port it to `~/dev/docker/docker-compose-wiki.yml` first):
 
-Examples included in this deployment pack:
-
-- [infra/docker-compose.memcached.override.yml.example](/Users/assisrmatheus/Developer/wiki/infra/docker-compose.memcached.override.yml.example)
-- [app/config/cache.memcached.php.example](/Users/assisrmatheus/Developer/wiki/app/config/cache.memcached.php.example)
+- [infra/docker-compose.memcached.override.yml.example](../infra/docker-compose.memcached.override.yml.example)
+- [app/config/cache.memcached.php.example](../app/config/cache.memcached.php.example)
 
 See also:
 
@@ -116,12 +135,12 @@ See also:
 
 ### Redis
 
-Redis is also officially documented as an object cache backend. In practice it is often attractive for self-hosters because it can be authenticated and reused for sessions, stash, and optionally the job queue.
+MediaWiki documents Redis as an object cache backend too. Self-hosters like it because it supports authentication and can hold sessions, stash and the job queue.
 
-Examples included in this deployment pack:
+Examples in this deployment pack (same caveat about the outdated `infra/` compose):
 
-- [infra/docker-compose.redis.override.yml.example](/Users/assisrmatheus/Developer/wiki/infra/docker-compose.redis.override.yml.example)
-- [app/config/cache.redis.php.example](/Users/assisrmatheus/Developer/wiki/app/config/cache.redis.php.example)
+- [infra/docker-compose.redis.override.yml.example](../infra/docker-compose.redis.override.yml.example)
+- [app/config/cache.redis.php.example](../app/config/cache.redis.php.example)
 
 See also:
 
@@ -130,34 +149,36 @@ See also:
 
 ### Recommendation for your setup
 
-For your deployment, the chosen setup is:
-
-1. `OPcache + APCu` on day one.
+1. `OPcache + APCu` from day one.
 2. Cloudflare for TLS, protection, and static assets.
-3. No Memcached or Redis unless later metrics or observed load justify them.
+3. No Memcached or Redis until metrics or observed load justify them.
 
-That is the lowest-complexity production baseline for a single-host deployment.
+For a single host, that is the production baseline with the fewest moving parts.
 
 ## Version policy
 
-For production, prefer the current LTS branch from the version lifecycle page unless you need a newer feature. Keep extensions on the matching branch, such as `REL1_43`.
+Run the current LTS branch from the version lifecycle page unless you need a newer feature, and keep extensions on the matching branch, such as `REL1_43`.
 
-## Install
+The wiki runs MediaWiki 1.43.11 on PHP 8.3. MediaWiki supports 1.43 LTS until December 2027 and plans 1.47 LTS for November 2026. MediaWiki 1.43 supports PHP 8.1 to 8.3.
+
+## Install (pre-Docker host install)
+
+These steps built the original host install with host nginx and php-fpm. The live wiki doesn't use them. Keep them for rollback.
 
 ### 1. Create a service account
 
-Use a dedicated `wiki` user on the server:
+Create a dedicated `wiki` user on the server:
 
 ```bash
 sudo adduser --disabled-password --gecos "" wiki
 sudo chown -R wiki:wiki /home/wiki/dev/wiki
 ```
 
-If you are keeping this deployment pack under `/Users/assisrmatheus/Developer/wiki` locally, copy it to `/home/wiki/dev/wiki` on the production server before running the scripts.
+If you keep a local copy of this deployment pack under `/Users/assisrmatheus/Developer/wiki`, copy it to `/home/wiki/dev/wiki` on the production server before you run the scripts.
 
 ### 2. Install host packages
 
-Follow the installation requirements page and keep the host runtime simple:
+Follow the installation requirements page and keep the host runtime lean:
 
 ```bash
 sudo apt update
@@ -166,12 +187,12 @@ sudo apt install -y nginx php-fpm php-cli php-mysql php-intl php-mbstring php-xm
 
 ### 3. Configure Docker services
 
-Review and copy:
+This step ran MariaDB and Caddy from the repo's `infra/` compose. The live stack in `~/dev/docker` replaced those files, which survive as outdated examples. Review and copy:
 
-- [infra/docker-compose.yml](/Users/assisrmatheus/Developer/wiki/infra/docker-compose.yml)
-- [infra/.env.example](/Users/assisrmatheus/Developer/wiki/infra/.env.example)
-- [infra/caddy/Caddyfile](/Users/assisrmatheus/Developer/wiki/infra/caddy/Caddyfile)
-- [infra/mariadb/conf.d/50-mediawiki.cnf](/Users/assisrmatheus/Developer/wiki/infra/mariadb/conf.d/50-mediawiki.cnf)
+- [infra/docker-compose.yml](../infra/docker-compose.yml)
+- [infra/.env.example](../infra/.env.example)
+- [infra/caddy/Caddyfile](../infra/caddy/Caddyfile)
+- [infra/mariadb/conf.d/50-mediawiki.cnf](../infra/mariadb/conf.d/50-mediawiki.cnf)
 
 Then:
 
@@ -185,11 +206,11 @@ docker compose up -d
 
 Copy the example files and adjust them for your domain and PHP version:
 
-- [ops/nginx/wiki.conf.example](/Users/assisrmatheus/Developer/wiki/ops/nginx/wiki.conf.example)
-- [ops/php-fpm/wiki.conf.example](/Users/assisrmatheus/Developer/wiki/ops/php-fpm/wiki.conf.example)
-- [ops/php-fpm/10-opcache.ini.example](/Users/assisrmatheus/Developer/wiki/ops/php-fpm/10-opcache.ini.example)
+- [ops/nginx/wiki.conf.example](../ops/nginx/wiki.conf.example)
+- [ops/php-fpm/wiki.conf.example](../ops/php-fpm/wiki.conf.example)
+- [ops/php-fpm/10-opcache.ini.example](../ops/php-fpm/10-opcache.ini.example)
 
-Suggested install:
+Install them:
 
 ```bash
 sudo cp /home/wiki/dev/wiki/ops/nginx/wiki.conf.example /etc/nginx/sites-available/wiki.conf
@@ -203,17 +224,17 @@ sudo systemctl reload nginx
 
 ### 5. Deploy a MediaWiki release
 
-Use the deploy script rather than unpacking into a mutable live tree:
+Deploy with the script instead of unpacking into a mutable live tree:
 
 ```bash
 sudo -u wiki /home/wiki/dev/wiki/ops/bin/deploy-core.sh 1.43.6
 ```
 
-That creates `app/releases/mediawiki-1.43.6/`, wires shared directories and config symlinks, and sets `app/current` if it does not exist yet.
+The script creates `app/releases/mediawiki-1.43.6/`, wires shared directories and config symlinks, and sets `app/current` if it doesn't exist yet.
 
 ### 6. Install MediaWiki using the CLI installer
 
-Use the official CLI installer rather than the web installer:
+Use the official CLI installer instead of the web installer. This command targets `127.0.0.1:3307`; the Docker MariaDB listens on `127.0.0.1:4938`.
 
 ```bash
 sudo -u wiki php /home/wiki/dev/wiki/app/current/maintenance/run.php install \
@@ -229,7 +250,7 @@ sudo -u wiki php /home/wiki/dev/wiki/app/current/maintenance/run.php install \
   "Wiki Name" "WikiAdmin"
 ```
 
-After that:
+Move LocalSettings into `app/config/` and create the DB secrets file:
 
 ```bash
 sudo -u wiki mv /home/wiki/dev/wiki/app/current/LocalSettings.php /home/wiki/dev/wiki/app/config/LocalSettings.php
@@ -238,14 +259,14 @@ cp /home/wiki/dev/wiki/app/config/secrets/db.php.example /home/wiki/dev/wiki/app
 chmod 640 /home/wiki/dev/wiki/app/config/LocalSettings.php /home/wiki/dev/wiki/app/config/secrets/db.php
 ```
 
-Then edit:
+Then edit both, using these examples as reference:
 
-- [app/config/LocalSettings.php.example](/Users/assisrmatheus/Developer/wiki/app/config/LocalSettings.php.example)
-- [app/config/secrets/db.php.example](/Users/assisrmatheus/Developer/wiki/app/config/secrets/db.php.example)
+- [app/config/LocalSettings.php.example](../app/config/LocalSettings.php.example)
+- [app/config/secrets/db.php.example](../app/config/secrets/db.php.example)
 
 ### 7. Enable jobs
 
-Install the systemd job runner:
+Install the systemd job runner. On Docker, the `wiki-jobrunner` container does this job.
 
 ```bash
 sudo cp /home/wiki/dev/wiki/ops/systemd/wiki-jobs.service /etc/systemd/system/
@@ -256,18 +277,18 @@ sudo systemctl enable --now wiki-jobs.timer
 
 ### 8. Install extensions
 
-For non-bundled extensions, use matching branches and run the updater after changes:
+For non-bundled extensions, use the matching branch and run the updater after each change:
 
 ```bash
 sudo -u wiki /home/wiki/dev/wiki/ops/bin/install-extension.sh TimedMediaHandler REL1_43
 sudo -u wiki php /home/wiki/dev/wiki/app/current/maintenance/run.php update
 ```
 
-For FFmpeg-backed media support, keep `ffmpeg` installed on the host and follow the TimedMediaHandler docs.
+For FFmpeg-backed media, keep `ffmpeg` installed on the host and follow the TimedMediaHandler docs.
 
-## Upgrades
+## Upgrades (pre-Docker host install)
 
-Follow `Manual:Upgrading` as the source of truth.
+On Docker, `update.sh` handles upgrades (see Docker operations). This section covers the host install's release-directory workflow. Treat `Manual:Upgrading` as the source of truth.
 
 Standard workflow:
 
@@ -277,7 +298,7 @@ Standard workflow:
 4. Run `maintenance/run.php update`.
 5. Test through the local origin.
 6. Switch `app/current`.
-7. Keep the previous release until the new one is confirmed healthy.
+7. Keep the previous release until you've confirmed the new one works.
 
 Scripted example:
 
@@ -287,26 +308,31 @@ sudo -u wiki /home/wiki/dev/wiki/ops/bin/upgrade-core.sh 1.43.12
 sudo -u wiki /home/wiki/dev/wiki/ops/bin/upgrade-core.sh 1.43.12 --switch
 ```
 
-The first run backs up the DB and files, deploys the release, carries over only non-bundled extensions/skins (bundled ones come from the new tarball), copies custom `resources/assets/` files, and runs `update`. It does not switch `app/current`; `--switch` does that atomically.
+The first run backs up the DB and files, deploys the release, carries over the non-bundled extensions and skins (bundled ones come from the new tarball), copies custom `resources/assets/` files, and runs `update`. It leaves `app/current` alone. `--switch` flips it in one atomic step.
 
-Carried-over extensions keep their old code: update each one to the matching `REL1_xx` branch or release tag. `TimedMediaHandler` and `Translate` load their own `vendor/`, so run `composer install --no-dev` in those directories after updating them.
+Carried-over extensions keep their old code, so update each one to the matching `REL1_xx` branch or release tag. `TimedMediaHandler` and `Translate` load their own `vendor/`; run `composer install --no-dev` in those directories after you update them.
 
-MediaWiki's `updatelog` keys include the absolute patch path, so a few extension schema patches (Translate, TimedMediaHandler) re-apply once per new release directory. They are idempotent.
+MediaWiki's `updatelog` keys include the absolute patch path, so a few extension schema patches (Translate, TimedMediaHandler) re-apply once per new release directory. They're idempotent.
 
 ## Maintenance
 
+`wiki-update.timer` runs `update.sh` each night at 04:30 America/Toronto. Each run pulls the current `mediawiki:1.43-fpm` image, which carries MediaWiki point releases.
+
+The host runs Ubuntu 25.10, which reached end of life on 2026-07-09 and gets no more security updates. Upgrade it to 26.04 LTS; that upgrade is pending.
+
 Monthly checks:
 
-- apply Ubuntu security updates
-- review MediaWiki LTS point releases
+- apply Ubuntu security updates (possible again after the 26.04 upgrade)
+- confirm `wiki-update.timer` ran and `update.sh` passed its smoke test
+- review MediaWiki LTS point releases and plan the move to 1.47 LTS
 - review extension branch compatibility
-- verify systemd job timer success
-- verify DB and file backups can be read
+- confirm the job runner works (`wiki-jobrunner` on Docker, the systemd job timer on the host install)
+- confirm you can read the DB and file backups
 - test a restore outside production
 
 ## Backups
 
-The official backup docs are clear that the important data is the database and the filesystem.
+MediaWiki's backup docs name the database and the filesystem as the data you need to keep.
 
 Back up:
 
@@ -319,16 +345,20 @@ Back up:
 
 Scripts:
 
-- [ops/bin/backup-db.sh](/Users/assisrmatheus/Developer/wiki/ops/bin/backup-db.sh)
-- [ops/bin/backup-files.sh](/Users/assisrmatheus/Developer/wiki/ops/bin/backup-files.sh)
-- [ops/bin/backup-xml.sh](/Users/assisrmatheus/Developer/wiki/ops/bin/backup-xml.sh)
+- [ops/bin/backup-db.sh](../ops/bin/backup-db.sh)
+- [ops/bin/backup-files.sh](../ops/bin/backup-files.sh)
+- [ops/bin/backup-xml.sh](../ops/bin/backup-xml.sh)
+
+`update.sh` takes a backup before it rebuilds the containers.
 
 Systemd automation:
 
-- [ops/systemd/wiki-backup-db.service](/Users/assisrmatheus/Developer/wiki/ops/systemd/wiki-backup-db.service)
-- [ops/systemd/wiki-backup-db.timer](/Users/assisrmatheus/Developer/wiki/ops/systemd/wiki-backup-db.timer)
-- [ops/systemd/wiki-backup-files.service](/Users/assisrmatheus/Developer/wiki/ops/systemd/wiki-backup-files.service)
-- [ops/systemd/wiki-backup-files.timer](/Users/assisrmatheus/Developer/wiki/ops/systemd/wiki-backup-files.timer)
+- [ops/systemd/wiki-backup-db.service](../ops/systemd/wiki-backup-db.service)
+- [ops/systemd/wiki-backup-db.timer](../ops/systemd/wiki-backup-db.timer)
+- [ops/systemd/wiki-backup-files.service](../ops/systemd/wiki-backup-files.service)
+- [ops/systemd/wiki-backup-files.timer](../ops/systemd/wiki-backup-files.timer)
+
+`wiki-backup-db.timer` runs at 03:15 UTC, and `wiki-backup-files.timer` runs at 03:45 UTC as root. No timer runs `backup-xml.sh`, so you run it by hand when you want an XML export.
 
 Install:
 
@@ -341,9 +371,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now wiki-backup-db.timer wiki-backup-files.timer
 ```
 
-`backup-db.sh` and `restore-db.sh` read `MARIADB_PASSWORD` from `infra/.env` if it exists, otherwise from `app/config/secrets/db.php`.
+`backup-db.sh` and `restore-db.sh` read `MARIADB_PASSWORD` from `infra/.env` if it exists, otherwise from `app/config/secrets/db.php`. The server has no `infra/.env`, so both scripts use `db.php`.
 
-Sitemap (daily, as `wiki`):
+Sitemap on the pre-Docker host install (daily, as `wiki`). The `wiki-sitemap` container replaced this timer.
 
 ```bash
 sudo cp /home/wiki/dev/wiki/ops/systemd/wiki-sitemap.service /etc/systemd/system/
@@ -352,24 +382,24 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now wiki-sitemap.timer
 ```
 
-Useful extra backups:
+Extra backups worth keeping:
 
 - encrypted off-host copies of `backups/`
-- periodic cold copy of `infra/mariadb/data/` after a clean shutdown
+- a periodic cold copy of the MariaDB data directory after a clean shutdown: `~/dev/docker/wiki-mariadb/data/` on Docker, `infra/mariadb/data/` on the host install
 - snapshot backups at the host or provider layer
 
 ## Security
 
 Keep these constraints in place:
 
-- Only Caddy is publicly reachable.
-- Keep host nginx bound to the Docker bridge IP (`172.17.0.1:7734`), not `0.0.0.0`; Caddy reaches it as `host.docker.internal:7734`.
-- Keep MariaDB bound to `127.0.0.1:4938` only.
-- Only MediaWiki's entry points (`index`, `load`, `api`, `rest`, `thumb`, `opensearch_desc`, `img_auth`) run PHP; see `ops/nginx/wiki.conf.example`.
+- Caddy is the one service the internet can reach.
+- `wiki-web` publishes nginx on the Docker bridge IP (`172.17.0.1:7734`), not `0.0.0.0`, and Caddy reaches it as `host.docker.internal:7734`. The host install bound host nginx to the same address.
+- Keep MariaDB bound to `127.0.0.1:4938`.
+- Let PHP run for MediaWiki's entry points (`index`, `load`, `api`, `rest`, `thumb`, `opensearch_desc`, `img_auth`) and nothing else. The live config is `~/dev/docker/wiki/nginx.conf`; the host install used `ops/nginx/wiki.conf.example`.
 - Keep Cloudflare on `Full (strict)`.
 - Deny PHP execution from uploads.
 - Block `/mw-config/` after installation.
-- Minimize extensions.
-- Disable anonymous editing and self-service registration unless needed.
+- Run as few extensions as you can.
+- Disable anonymous editing and self-service registration unless you need them.
 
-When this file conflicts with official MediaWiki docs, prefer the official docs.
+Two gaps remain open. Email has no SMTP, so the wiki can't send mail. MediaWiki sees Caddy's IP as the client IP, so IP blocks and logs point at Caddy instead of the visitor.

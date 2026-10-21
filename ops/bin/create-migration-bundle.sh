@@ -16,6 +16,7 @@ required=(
   "${BASE}/infra/.env"
   "${BASE}/app/config/LocalSettings.php"
   "${BASE}/app/config/secrets/db.php"
+  "${BASE}/app/config/secrets/SecretsSettings.php"
 )
 
 existing=()

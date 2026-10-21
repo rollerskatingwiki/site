@@ -1,576 +1,370 @@
-# Migrating MediaWiki To A Fresh Server
+# Migrating the Wiki to a Fresh Server
 
-Last reviewed: 2026-03-16
+Last reviewed: 2026-10-21
 
-This document is for the specific case where you are about to format or reset the server and need to preserve the entire wiki safely.
+Use this runbook before you format the server that hosts rollerskating.wiki. You freeze writes, back up, verify the backups, copy them off the machine and record an inventory. You format after all of that, then rebuild the wiki from the off-server copy.
 
-It is intentionally conservative. The goal is not just to make backups, but to verify that the backups are complete, readable, and sufficient to restore the wiki without data loss.
-
-Primary references:
+References:
 
 - <https://www.mediawiki.org/wiki/Manual:Backing_up_a_wiki>
 - <https://www.mediawiki.org/wiki/Manual:Upgrading>
-- <https://www.mediawiki.org/wiki/Manual:Installing_MediaWiki>
-- <https://www.mediawiki.org/wiki/Manual:Security>
+- <https://www.mediawiki.org/wiki/Manual:$wgReadOnly>
+- [OPERATIONS.md](OPERATIONS.md) for day-to-day commands
 
-Related local files:
+Scripts in this repo:
 
-- [docs/OPERATIONS.md](/Users/assisrmatheus/Developer/wiki/docs/OPERATIONS.md)
-- [ops/bin/backup-db.sh](/Users/assisrmatheus/Developer/wiki/ops/bin/backup-db.sh)
-- [ops/bin/backup-files.sh](/Users/assisrmatheus/Developer/wiki/ops/bin/backup-files.sh)
-- [ops/bin/backup-xml.sh](/Users/assisrmatheus/Developer/wiki/ops/bin/backup-xml.sh)
-- [ops/bin/export-inventory.sh](/Users/assisrmatheus/Developer/wiki/ops/bin/export-inventory.sh)
-- [ops/bin/backup-live-host-config.sh](/Users/assisrmatheus/Developer/wiki/ops/bin/backup-live-host-config.sh)
-- [ops/bin/verify-backups.sh](/Users/assisrmatheus/Developer/wiki/ops/bin/verify-backups.sh)
-- [ops/bin/create-migration-bundle.sh](/Users/assisrmatheus/Developer/wiki/ops/bin/create-migration-bundle.sh)
-- [ops/bin/pre-migration-check.sh](/Users/assisrmatheus/Developer/wiki/ops/bin/pre-migration-check.sh)
-- [ops/bin/restore-db.sh](/Users/assisrmatheus/Developer/wiki/ops/bin/restore-db.sh)
-- [ops/bin/restore-host-config.sh](/Users/assisrmatheus/Developer/wiki/ops/bin/restore-host-config.sh)
-- [ops/bin/post-restore-check.sh](/Users/assisrmatheus/Developer/wiki/ops/bin/post-restore-check.sh)
+- Backups: [backup-db.sh](../ops/bin/backup-db.sh), [backup-files.sh](../ops/bin/backup-files.sh), [backup-xml.sh](../ops/bin/backup-xml.sh), [backup-live-host-config.sh](../ops/bin/backup-live-host-config.sh)
+- Checks and records: [verify-backups.sh](../ops/bin/verify-backups.sh), [export-inventory.sh](../ops/bin/export-inventory.sh), [create-migration-bundle.sh](../ops/bin/create-migration-bundle.sh)
+- Wrappers: [pre-migration-check.sh](../ops/bin/pre-migration-check.sh), [post-restore-check.sh](../ops/bin/post-restore-check.sh)
+- Restore: [restore-db.sh](../ops/bin/restore-db.sh), [restore-host-config.sh](../ops/bin/restore-host-config.sh)
 
-## What Must Survive
+The build and update files live outside the repo, in `/home/assisr/dev/docker/wiki`.
 
-For this deployment, treat these as the required recovery set:
+## The deployment
 
-- database logical dump
-- `app/config/`
-- `app/shared/images/`
-- `infra/`
-- `ops/`
-- current MediaWiki release version information
-- installed extension list and their branches
+The wiki runs in Docker as part of the shared stack in `/home/assisr/dev/docker`. The stack's `.env` sets `COMPOSE_FILE` to ten compose files, `docker-compose-wiki.yml` among them, so run each `docker compose` command from `/home/assisr/dev/docker`.
 
-Do not rely only on raw Docker volume data or only on copying the application folder. The official MediaWiki backup guidance is clear that the critical data is the database and the filesystem together.
+| Container | Compose service | Role |
+|---|---|---|
+| `wiki` | `wiki` | PHP-FPM, built `FROM mediawiki:1.43-fpm`. Mounts `app/config` read-only at `/config` and `app/shared/images` read-write. |
+| `wiki-web` | `wiki-web` | nginx. Publishes `172.17.0.1:7734`. |
+| `wiki-jobrunner` | `wiki-jobrunner` | Runs `runJobs --wait` in a loop as `www-data`. |
+| `wiki-sitemap` | `wiki-sitemap` | Runs `generateSitemap` once a day as `1001:33` into `app/shared/sitemap`. |
+| `wiki-mariadb` | `mariadb` | MariaDB 11. Data in `/home/assisr/dev/docker/wiki-mariadb/data`, config in `wiki-mariadb/conf.d`, port `127.0.0.1:4938`. |
+| `caddy` | `caddy` | TLS for rollerskating.wiki, proxying to `host.docker.internal:7734`. Defined in `docker-compose-network.yml`, configured in `caddy/Caddyfile`, and needs `CLOUDFLARE_API_TOKEN_WIKI` from the stack `.env`. |
 
-## Migration Strategy
+Three systemd timers run on the host: `wiki-backup-db`, `wiki-backup-files` and `wiki-update`. The last one runs `/home/assisr/dev/docker/wiki/update.sh` as `assisr` at 04:30.
 
-Use this order:
+## Recovery set
 
-1. Freeze writes.
-2. Create fresh backups.
-3. Verify those backups locally.
-4. Copy them off the server.
-5. Export a machine-readable inventory of the running deployment.
-6. Only then format or rebuild the server.
-7. Reinstall the base OS and packages.
-8. Restore the deployment tree.
-9. Restore the database.
-10. Validate the site before putting it back in service.
+You need each of these to rebuild the wiki.
 
-## Part 1: Before Formatting The Server
+| Item | Path | Archived by |
+|---|---|---|
+| Database dump | `backups/db/mediawiki-*.sql.gz` | `backup-db.sh` |
+| Settings and secrets | `app/config`: `LocalSettings.php`, plus `secrets/SecretsSettings.php` (DB creds, Turnstile keys, `$wgSecretKey`) and `secrets/db.php` (a second copy of the DB creds) | `backup-files.sh` |
+| Uploads | `app/shared/images` | `backup-files.sh` |
+| Sitemap | `app/shared/sitemap` | nothing; `wiki-sitemap` rebuilds it on start |
+| Wiki repo | `/home/wiki/dev/wiki` (docs, ops, infra) | GitHub, plus `backup-files.sh` for `ops` and `infra` and the migration bundle for `docs` |
+| Wiki compose and build files | `/home/assisr/dev/docker/docker-compose-wiki.yml`, `/home/assisr/dev/docker/wiki` | `backup-files.sh`, `backup-live-host-config.sh` |
+| Caddyfile | `/home/assisr/dev/docker/caddy/Caddyfile` | `backup-live-host-config.sh` |
+| Stack `.env` | `/home/assisr/dev/docker/.env` (`MARIADB_PASSWORD`, `MARIADB_ROOT_PASSWORD`, Cloudflare tokens) | nothing; Part 1 step 4 archives it |
+| MariaDB config | `/home/assisr/dev/docker/wiki-mariadb/conf.d` | nothing; Part 1 step 4 archives it |
+| Host timer units | `/etc/systemd/system/wiki-{backup-db,backup-files,update}.{service,timer}` | `backup-live-host-config.sh` |
+
+You don't need to save the MediaWiki code or the extensions. `update.sh` rebuilds both images from the Dockerfile, and its `ADD` lines pin each extension to a branch or tag. `export-inventory.sh` copies those lines into `backups/inventory/extensions-git.txt`.
+
+The repo's `.gitignore` excludes `app/config/secrets/`, so a clone of `git@github.com:rollerskatingwiki/site.git` comes without secrets. Commit or archive local changes before you format; `git -C /home/wiki/dev/wiki status --short` lists them.
+
+## Part 1: Before you format
 
 ### Fast path
-
-If the server is already configured and you want the streamlined path, use:
 
 ```bash
 sudo /home/wiki/dev/wiki/ops/bin/pre-migration-check.sh
 ```
 
-That will:
+The script stops `wiki-jobrunner` and `wiki-sitemap`, then runs the DB, files and XML backups. It exports the inventory, archives the stack files, Caddyfile and timer units, verifies the backups and writes a migration bundle. It also stops `wiki-update.timer`. You still do three steps by hand: the read-only freeze (step 2), the stack `.env` archive (step 4) and the off-server copy (step 7).
 
-- stop the job timer
-- create DB, file, and XML backups
-- export the deployment inventory
-- archive the live host config from `/etc`
-- verify the backup artifacts
-- create one migration bundle tarball
+The bundle step prints `warning: missing /home/wiki/dev/wiki/infra/.env`. The live server has no such file, so ignore the warning.
 
-You should still read the rest of this document once before relying on it.
-
-### 1. Confirm the current state
-
-Record the current versions before touching anything:
+### 1. Record the current state
 
 ```bash
 uname -a
 docker --version
 docker compose version
-php -v
-nginx -v
-```
-
-Record the active MediaWiki release:
-
-```bash
-readlink -f /home/wiki/dev/wiki/app/current
-```
-
-Record running containers:
-
-```bash
 docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
+docker exec wiki php -r 'echo PHP_VERSION, PHP_EOL;'
+echo 'echo MW_VERSION, PHP_EOL;' | docker exec -i wiki php maintenance/run.php eval
+docker exec wiki php maintenance/run.php showSiteStats
+find /home/wiki/dev/wiki/app/shared/images -type f | wc -l
 ```
 
-### 2. Put the wiki into maintenance mode
+Save the `showSiteStats` output and the image count. You compare both against the rebuilt server.
 
-Before backup, stop edits and content changes. The cleanest way is to set the wiki read-only in `LocalSettings.php` temporarily.
+### 2. Freeze writes
 
-Add a temporary line like this to the active `LocalSettings.php`:
-
-```php
-$wgReadOnly = 'Server maintenance in progress';
-```
-
-Then reload PHP-FPM if needed:
+Append the read-only line to the real settings file:
 
 ```bash
-sudo systemctl reload php8.3-fpm
+echo "\$wgReadOnly = 'Server migration in progress';" | sudo -u wiki tee -a /home/wiki/dev/wiki/app/config/LocalSettings.php
+tail -n 2 /home/wiki/dev/wiki/app/config/LocalSettings.php
 ```
 
-If you do not want to edit the file manually, at minimum stop user traffic at the reverse proxy while the final backup is taken.
-
-### 3. Stop non-essential write activity
-
-Disable the job timer before the final backup:
+PHP picks up the change within 60 seconds (`opcache.revalidate_freq=60` in the image). You don't reload or restart anything. Confirm it after a minute:
 
 ```bash
-sudo systemctl stop wiki-jobs.timer
-sudo systemctl stop wiki-jobs.service || true
+curl -s -H 'Host: rollerskating.wiki' 'http://172.17.0.1:7734/api.php?action=query&meta=siteinfo&format=json' | grep -o '"readonlyreason":"[^"]*"'
 ```
 
-If you run any other scripts that write into the wiki or database, stop them too.
+An empty result means PHP still serves the old settings.
 
-### 4. Take fresh backups
+### 3. Stop background writers
 
-Run all three backup types:
+```bash
+docker stop wiki-jobrunner wiki-sitemap
+sudo systemctl stop wiki-update.timer
+```
+
+`update.sh` runs `docker compose up -d` on all four wiki services, so the 04:30 timer would restart the job runner in the middle of your migration.
+
+### 4. Back up
 
 ```bash
 sudo /home/wiki/dev/wiki/ops/bin/backup-db.sh
 sudo /home/wiki/dev/wiki/ops/bin/backup-files.sh
 sudo /home/wiki/dev/wiki/ops/bin/backup-xml.sh
+sudo /home/wiki/dev/wiki/ops/bin/backup-live-host-config.sh
 ```
 
-This gives you:
+These write:
 
-- SQL dump for the canonical restore path
-- filesystem archive for config, images, infra, and ops
-- XML content export as an extra fallback
+- `backups/db/mediawiki-<timestamp>.sql.gz`, the restore source
+- `backups/files/mediawiki-files-<timestamp>.tar.gz` with `app/config`, `app/shared/images`, `infra`, `ops`, `docker-compose-wiki.yml` and the `wiki/` build dir
+- `backups/xml/wiki-full-<timestamp>.xml` with each page and revision, your fallback if the SQL dump won't load
+- `backups/files/live-host-config-<timestamp>.tar.gz` with the wiki stack files, the Caddyfile and the six timer units
 
-### 5. Verify that the backups are readable
+No script archives the stack `.env`, the MariaDB config or Caddy's Dockerfile. Archive them with the compose files (`COMPOSE_FILE` names all ten, and `docker compose` reads each one):
 
-Do not skip this step.
+```bash
+sudo tar -czf /home/wiki/dev/wiki/backups/files/docker-stack-$(date +%F-%H%M%S).tar.gz \
+  /home/assisr/dev/docker/.env \
+  /home/assisr/dev/docker/docker-compose*.yml \
+  /home/assisr/dev/docker/caddy/Caddyfile \
+  /home/assisr/dev/docker/caddy/Dockerfile \
+  /home/assisr/dev/docker/wiki \
+  /home/assisr/dev/docker/wiki-mariadb/conf.d
+```
 
-Automated:
+This archive holds the Cloudflare tokens and the MariaDB root password. Store it with the same care as `secrets/`. The other services in the stack (Jellyfin, Sonarr, Radarr and the rest) fall outside this runbook; back up their data dirs on your own schedule.
+
+### 5. Verify the backups
 
 ```bash
 sudo /home/wiki/dev/wiki/ops/bin/verify-backups.sh
 ```
 
-Check the newest DB dump:
+The script runs `gzip -t` on the newest dump and checks for the `Dump completed` trailer. It lists the newest files archive with `tar -tzf` and checks the XML for its closing `</mediawiki>` tag. It skips the archives you made in step 4, so check those by hand:
 
 ```bash
-ls -lh /home/wiki/dev/wiki/backups/db
-gzip -t "$(ls -t /home/wiki/dev/wiki/backups/db/*.sql.gz | head -n 1)"
-zcat "$(ls -t /home/wiki/dev/wiki/backups/db/*.sql.gz | head -n 1)" | head -n 20
+cd /home/wiki/dev/wiki/backups/files
+tar -tzf "$(ls -t docker-stack-*.tar.gz | head -n 1)"
+tar -tzf "$(ls -t live-host-config-*.tar.gz | head -n 1)"
+tar -tzf "$(ls -t mediawiki-files-*.tar.gz | head -n 1)" | grep 'app/shared/images/' | grep -vc '/$'
 ```
 
-Check the newest file archive:
+The last count must match the image count from step 1.
 
-```bash
-ls -lh /home/wiki/dev/wiki/backups/files
-tar -tzf "$(ls -t /home/wiki/dev/wiki/backups/files/*.tar.gz | head -n 1)" | head -n 50
-```
-
-Check the newest XML export:
-
-```bash
-ls -lh /home/wiki/dev/wiki/backups/xml
-head -n 20 "$(ls -t /home/wiki/dev/wiki/backups/xml/*.xml | head -n 1)"
-```
-
-### 6. Create a deployment inventory
-
-Create a record of exactly what is deployed right now. Save this as plain text alongside the backups.
-
-Automated:
+### 6. Export the inventory
 
 ```bash
 sudo /home/wiki/dev/wiki/ops/bin/export-inventory.sh
+ls -l /home/wiki/dev/wiki/backups/inventory
 ```
 
-```bash
-mkdir -p /home/wiki/dev/wiki/backups/inventory
-{
-  echo "DATE=$(date --iso-8601=seconds)"
-  echo "CURRENT_RELEASE=$(readlink -f /home/wiki/dev/wiki/app/current)"
-  echo "PHP_VERSION=$(php -r 'echo PHP_VERSION;')"
-  echo "DOCKER_VERSION=$(docker --version)"
-  echo "COMPOSE_VERSION=$(docker compose version)"
-  echo
-  echo "[docker ps]"
-  docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
-  echo
-  echo "[nginx version]"
-  nginx -v 2>&1
-  echo
-  echo "[php modules]"
-  php -m | sort
-} > /home/wiki/dev/wiki/backups/inventory/system.txt
-```
+You get `system.txt` (MediaWiki, PHP and image versions, `docker ps`, PHP modules), `extensions.txt`, `skins.txt` and `extensions-git.txt` (the Dockerfile's `ADD` lines).
 
-Capture extension and skin directories from the current release:
-
-```bash
-find /home/wiki/dev/wiki/app/current/extensions -maxdepth 1 -mindepth 1 -type d | sort > /home/wiki/dev/wiki/backups/inventory/extensions.txt
-find /home/wiki/dev/wiki/app/current/skins -maxdepth 1 -mindepth 1 -type d | sort > /home/wiki/dev/wiki/backups/inventory/skins.txt
-```
-
-If any extensions are Git clones, capture their branch and revision:
-
-```bash
-while read -r dir; do
-  if [ -d "$dir/.git" ]; then
-    {
-      echo "[$dir]"
-      git -C "$dir" branch --show-current || true
-      git -C "$dir" rev-parse HEAD || true
-    } >> /home/wiki/dev/wiki/backups/inventory/extensions-git.txt
-  fi
-done < /home/wiki/dev/wiki/backups/inventory/extensions.txt
-```
-
-### 7. Save host configuration that lives outside `/home/wiki/dev/wiki`
-
-Your deployment pack stores examples in the tree, but the live server also has real config in `/etc`.
-
-Back up the live copies too:
-
-Automated:
-
-```bash
-sudo /home/wiki/dev/wiki/ops/bin/backup-live-host-config.sh
-```
-
-```bash
-sudo tar -czf /home/wiki/dev/wiki/backups/files/live-host-config-$(date +%F-%H%M%S).tar.gz \
-  /etc/nginx/sites-available/wiki.conf \
-  /etc/nginx/sites-enabled/wiki.conf \
-  /etc/php/8.3/fpm/pool.d/wiki.conf \
-  /etc/php/8.3/fpm/conf.d/10-opcache.ini \
-  /etc/systemd/system/wiki-jobs.service \
-  /etc/systemd/system/wiki-jobs.timer \
-  /etc/systemd/system/wiki-backup-db.service \
-  /etc/systemd/system/wiki-backup-db.timer \
-  /etc/systemd/system/wiki-backup-files.service \
-  /etc/systemd/system/wiki-backup-files.timer
-```
-
-If your PHP version differs, adjust the `/etc/php/8.3/` path accordingly.
-
-### 8. Copy the recovery set off the server
-
-Before formatting the machine, copy the full backup set to another device or another machine.
-
-Minimum set to copy:
-
-- `/home/wiki/dev/wiki/backups/`
-- `/home/wiki/dev/wiki/infra/.env`
-- `/home/wiki/dev/wiki/app/config/LocalSettings.php`
-- `/home/wiki/dev/wiki/app/config/secrets/db.php`
-- `/home/wiki/dev/wiki/README.md`
-- `/home/wiki/dev/wiki/docs/`
-- `/home/wiki/dev/wiki/ops/`
-
-Best practice:
-
-- keep one local copy on an external SSD
-- keep one second copy elsewhere
-- verify file sizes after transfer
-
-To make the handoff simpler, create one migration bundle too:
+### 7. Bundle and copy off the server
 
 ```bash
 sudo /home/wiki/dev/wiki/ops/bin/create-migration-bundle.sh
 ```
 
-That bundle is not a substitute for your copied `backups/` directory. It is an extra convenience archive.
+The bundle in `backups/migration/` packs `backups/`, `docs/`, `ops/`, `README.md`, `LocalSettings.php`, `secrets/db.php` and `secrets/SecretsSettings.php`.
 
-### 9. Optional cold backup of MariaDB data directory
-
-This is optional and should not replace the SQL dump.
-
-If you want a raw copy of `infra/mariadb/data`:
-
-1. Stop the MariaDB container cleanly.
-2. Archive the data directory.
-3. Start the container again only if the server remains in service.
-
-Example:
+Copy the whole `backups/` tree to two devices that live apart from this server, for example a second machine and an external SSD:
 
 ```bash
-cd /home/wiki/dev/wiki/infra
+rsync -a /home/wiki/dev/wiki/backups/ <user>@<backup-host>:wiki-migration/backups/
+rsync -a --checksum --dry-run --itemize-changes /home/wiki/dev/wiki/backups/ <user>@<backup-host>:wiki-migration/backups/
+```
+
+The second command prints nothing when the copy matches. Repeat both for the second device.
+
+### 8. Optional: cold copy of the MariaDB data dir
+
+The SQL dump stays your restore path. A raw copy of the data dir gives you a second, forensic one, and it restores into the same MariaDB 11 release.
+
+```bash
+cd /home/assisr/dev/docker
 docker compose stop mariadb
-tar -czf /home/wiki/dev/wiki/backups/files/mariadb-datadir-$(date +%F-%H%M%S).tar.gz /home/wiki/dev/wiki/infra/mariadb/data
+sudo tar -czf /home/wiki/dev/wiki/backups/files/mariadb-datadir-$(date +%F-%H%M%S).tar.gz /home/assisr/dev/docker/wiki-mariadb/data
 docker compose start mariadb
 ```
 
-This is useful as an extra forensic copy, not as the primary restore path.
+Copy this archive off the server with the rest.
 
-### 10. Final pre-format checklist
+### 9. Final pre-format checklist
 
-Do not reset the server until all of these are true:
+Format the server after you can tick each line:
 
-- the wiki is in maintenance mode
-- the latest SQL dump exists and passes `gzip -t`
-- the latest file archive opens with `tar -tzf`
-- the XML export exists
-- the backup set has been copied off the server
-- the copied backup set has been spot-checked
-- the deployment inventory files exist
+- [ ] `$wgReadOnly` sits in `app/config/LocalSettings.php`, and the siteinfo call returns `readonlyreason`
+- [ ] `wiki-jobrunner`, `wiki-sitemap` and `wiki-update.timer` are stopped
+- [ ] you took the dump, files and XML backups after the freeze, and `verify-backups.sh` passed on them
+- [ ] the image count in the `mediawiki-files` archive matches the live count
+- [ ] the `docker-stack` archive lists `.env`, `caddy/Caddyfile` and `wiki-mariadb/conf.d`
+- [ ] `backups/inventory/` holds `system.txt`, `extensions.txt`, `skins.txt` and `extensions-git.txt`
+- [ ] you saved the `showSiteStats` output somewhere off the server
+- [ ] two off-server copies exist, and `rsync --checksum --dry-run` shows no differences for either
+- [ ] you opened one copy from a second machine and listed a tarball in it
 
-## Part 2: Rebuilding And Restoring On The Fresh Server
+## Part 2: Rebuild on the fresh server
 
-### 1. Reinstall the base OS and packages
+### 1. Install the OS and Docker
 
-On the new server:
+Install Ubuntu 26.04 LTS. Ubuntu 25.10 has reached end of life. Install Docker Engine and the Compose plugin from Docker's apt repository (<https://docs.docker.com/engine/install/ubuntu/>).
 
-- install Ubuntu
-- install Docker and Docker Compose
-- install host packages required by the wiki runtime
-
-Use the package list from [docs/OPERATIONS.md](/Users/assisrmatheus/Developer/wiki/docs/OPERATIONS.md).
-
-### 2. Restore the deployment tree
-
-Restore the full deployment pack to:
-
-```text
-/home/wiki/dev/wiki
-```
-
-After restoring, verify the tree contains at least:
-
-- `app/`
-- `infra/`
-- `ops/`
-- `backups/`
-- `docs/`
-
-Restore ownership:
+Install `php-cli` on the host as well. `backup-db.sh` and `restore-db.sh` read the DB password from `secrets/db.php` with the host's `php -r`.
 
 ```bash
-sudo adduser --disabled-password --gecos "" wiki
-sudo chown -R wiki:wiki /home/wiki/dev/wiki
+sudo apt update
+sudo apt install -y php-cli rsync curl
 ```
 
-### 3. Restore live host configuration
+### 2. Create users and groups
 
-Restore the nginx, PHP-FPM, and systemd files from the backup archive or from the examples in the deployment pack.
-
-Automated:
+The `wiki-sitemap` container runs as `1001:33`, so the `wiki` user needs uid 1001 and `www-data` needs gid 33. Ubuntu ships `www-data` as gid 33; check before you add the user:
 
 ```bash
-sudo /home/wiki/dev/wiki/ops/bin/restore-host-config.sh
+getent group www-data
+sudo adduser --uid 1001 --disabled-password --gecos "" wiki
+sudo chmod 751 /home/wiki
+sudo usermod -aG docker,www-data,wiki assisr
 ```
 
-At minimum:
+`wiki-update.service` runs `update.sh` as `assisr`. That user needs `docker` to build, `www-data` to read `secrets/db.php` and `wiki` to write into `backups/db`. Log out and back in to pick up the groups.
+
+### 3. Restore the files
+
+Clone the repo, pull the backup set back in, then unpack the archives over the tree:
 
 ```bash
-sudo cp /home/wiki/dev/wiki/ops/nginx/wiki.conf.example /etc/nginx/sites-available/wiki.conf
-sudo ln -s /etc/nginx/sites-available/wiki.conf /etc/nginx/sites-enabled/wiki.conf
-sudo cp /home/wiki/dev/wiki/ops/php-fpm/wiki.conf.example /etc/php/8.3/fpm/pool.d/wiki.conf
-sudo cp /home/wiki/dev/wiki/ops/php-fpm/10-opcache.ini.example /etc/php/8.3/fpm/conf.d/10-opcache.ini
+sudo install -d -o assisr /home/wiki/dev
+git clone git@github.com:rollerskatingwiki/site.git /home/wiki/dev/wiki
+rsync -a <user>@<backup-host>:wiki-migration/backups/ /home/wiki/dev/wiki/backups/
+cd /home/wiki/dev/wiki/backups/files
+sudo tar -xzpf "$(ls -t mediawiki-files-*.tar.gz | head -n 1)" -C /
+sudo tar -xzpf "$(ls -t docker-stack-*.tar.gz | head -n 1)" -C /
 ```
 
-Then install systemd units:
+The first archive restores `app/config`, `app/shared/images`, `infra`, `ops` and the wiki build files. The second restores the stack `.env`, the compose files, Caddy's Caddyfile and Dockerfile, and the MariaDB config. The `live-host-config` archive duplicates the stack files and adds the `/etc/systemd/system` units, which step 8 reinstalls from the restored dirs.
+
+Restore the other stack services' data into `/home/assisr/dev/docker` from their own backups.
+
+### 4. Set ownership and modes
 
 ```bash
-sudo cp /home/wiki/dev/wiki/ops/systemd/wiki-jobs.service /etc/systemd/system/
-sudo cp /home/wiki/dev/wiki/ops/systemd/wiki-jobs.timer /etc/systemd/system/
-sudo cp /home/wiki/dev/wiki/ops/systemd/wiki-backup-db.service /etc/systemd/system/
-sudo cp /home/wiki/dev/wiki/ops/systemd/wiki-backup-db.timer /etc/systemd/system/
-sudo cp /home/wiki/dev/wiki/ops/systemd/wiki-backup-files.service /etc/systemd/system/
-sudo cp /home/wiki/dev/wiki/ops/systemd/wiki-backup-files.timer /etc/systemd/system/
-sudo systemctl daemon-reload
+sudo chown -R wiki:wiki /home/wiki/dev
+sudo chown wiki:www-data /home/wiki/dev/wiki/app/config /home/wiki/dev/wiki/app/config/LocalSettings.php
+sudo chown -R wiki:www-data /home/wiki/dev/wiki/app/config/secrets /home/wiki/dev/wiki/app/shared/images
+sudo chmod 2770 /home/wiki/dev/wiki/app/config/secrets
+sudo chmod 640 /home/wiki/dev/wiki/app/config/LocalSettings.php /home/wiki/dev/wiki/app/config/secrets/SecretsSettings.php /home/wiki/dev/wiki/app/config/secrets/db.php
+sudo find /home/wiki/dev/wiki/app/shared/images -type d -exec chmod 2775 {} +
+sudo find /home/wiki/dev/wiki/app/shared/images -type f -exec chmod 664 {} +
+sudo install -d -o wiki -g wiki -m 775 /home/wiki/dev/wiki/app/shared/sitemap
+sudo chmod -R g+w /home/wiki/dev/wiki/backups
 ```
 
-### 4. Restore Docker service configuration and secrets
+PHP inside the containers runs as `www-data` (uid 33). It reads `LocalSettings.php` and the secrets through the group and writes uploads through the group bit on `images/`.
 
-Restore:
+### 5. Restore the database
 
-- `infra/docker-compose.yml`
-- `infra/.env`
-- `infra/caddy/Caddyfile`
-- `infra/mariadb/conf.d/50-mediawiki.cnf`
-
-Then start the containers:
+MariaDB starts on an empty `wiki-mariadb/data` and creates the `mediawiki` database and user from `MARIADB_PASSWORD` in the stack `.env`. That value must match `$wgDBpassword` in `secrets/db.php` and `secrets/SecretsSettings.php`.
 
 ```bash
-cd /home/wiki/dev/wiki/infra
-docker compose up -d
-```
-
-Confirm MariaDB is healthy before proceeding:
-
-```bash
-docker ps
-docker logs wiki-mariadb --tail 50
-```
-
-### 5. Restore MediaWiki core release and shared files
-
-Restore or redeploy the release directory matching the version recorded in the inventory.
-
-If you already restored the full `app/` tree from backup, verify:
-
-```bash
-readlink -f /home/wiki/dev/wiki/app/current
-ls -la /home/wiki/dev/wiki/app/config
-ls -la /home/wiki/dev/wiki/app/shared/images
-```
-
-If the release directories were not preserved, redeploy the exact version with:
-
-```bash
-sudo -u wiki /home/wiki/dev/wiki/ops/bin/deploy-core.sh 1.43.6
-```
-
-Then restore:
-
-- `app/config/LocalSettings.php`
-- `app/config/secrets/db.php`
-- `app/shared/images/`
-
-### 6. Restore the database from the SQL dump
-
-Identify the newest SQL backup:
-
-```bash
-ls -t /home/wiki/dev/wiki/backups/db/*.sql.gz | head -n 1
-```
-
-Restore it:
-
-Automated:
-
-```bash
+cd /home/assisr/dev/docker
+docker compose up -d mariadb
+until [ "$(docker inspect -f '{{.State.Health.Status}}' wiki-mariadb)" = healthy ]; do sleep 5; done
 sudo /home/wiki/dev/wiki/ops/bin/restore-db.sh
 ```
 
-Or specify a file:
+`restore-db.sh` loads the newest dump by filename through `docker exec -i wiki-mariadb`. Pass a path to load a different one:
 
 ```bash
 sudo /home/wiki/dev/wiki/ops/bin/restore-db.sh /home/wiki/dev/wiki/backups/db/mediawiki-YYYY-MM-DD-HHMMSS.sql.gz
 ```
 
-```bash
-zcat /home/wiki/dev/wiki/backups/db/mediawiki-YYYY-MM-DD-HHMMSS.sql.gz | \
-docker exec -i -e MYSQL_PWD="$(grep '^MARIADB_PASSWORD=' /home/wiki/dev/wiki/infra/.env | cut -d= -f2-)" wiki-mariadb \
-  mariadb -umediawiki mediawiki
-```
+The script reads the password from `infra/.env` if that file exists and falls back to `secrets/db.php`.
 
-If the database and user do not exist yet, create them first using the root password from `infra/.env`.
+If you restore the cold data-dir copy instead, stop `mariadb`, unpack the archive with `sudo tar -xzpf <archive> -C /`, start `mariadb` and skip `restore-db.sh`.
 
-### 7. Restore permissions and symlinks
+### 6. Build and start the wiki
 
-After the files are back in place:
+`update.php` writes to the database (it purges the `objectcache` table at the end), and MediaWiki rejects that write while `$wgReadOnly` is set. The restored `LocalSettings.php` carries the freeze from Part 1, so comment it out for the build. The origin listens on the Docker bridge, and Caddy is still down, so no visitor can edit in this window.
 
 ```bash
-sudo chown -R wiki:wiki /home/wiki/dev/wiki/app
-sudo chown -R www-data:www-data /home/wiki/dev/wiki/app/shared/images
-sudo chmod 640 /home/wiki/dev/wiki/app/config/LocalSettings.php
-sudo chmod 640 /home/wiki/dev/wiki/app/config/secrets/db.php
+sudo -u wiki sed -i 's/^\$wgReadOnly = /# &/' /home/wiki/dev/wiki/app/config/LocalSettings.php
+/home/assisr/dev/docker/wiki/update.sh
 ```
 
-Verify these symlinks:
+Run `update.sh` as `assisr`. It takes a DB backup, builds both images with `--pull`, starts `wiki`, `wiki-web`, `wiki-jobrunner` and `wiki-sitemap`, and runs `update.php --quick`. It ends with a smoke test of four URLs on `172.17.0.1:7734` plus a Scribunto call. The fresh server has no `:previous` images, so a failed smoke test exits without a rollback; read `docker compose logs wiki wiki-web` from `/home/assisr/dev/docker`.
+
+Put the freeze back once `update.sh` prints `wiki updated`:
 
 ```bash
-ls -la /home/wiki/dev/wiki/app/current
+sudo -u wiki sed -i 's/^# \(\$wgReadOnly = \)/\1/' /home/wiki/dev/wiki/app/config/LocalSettings.php
 ```
 
-You should see:
+### 7. Start Caddy
 
-- `LocalSettings.php` pointing to `app/config/LocalSettings.php`
-- `images` pointing to `app/shared/images`
-
-### 8. Restore extensions and skins
-
-If extensions and skins were restored with the full release tree, verify them against the inventory files.
-
-If they were not restored, reinstall them from the recorded branch and revision information, then run:
+Point the rollerskating.wiki DNS records at the new server in Cloudflare if its IP changed. Wait 60 seconds after the last step so PHP serves the read-only settings, then:
 
 ```bash
-sudo -u wiki php /home/wiki/dev/wiki/app/current/maintenance/run.php update
+cd /home/assisr/dev/docker
+docker compose up -d caddy
+docker logs caddy --tail 50
 ```
 
-### 9. Start services and validate locally
+Caddy gets its certificate through the Cloudflare DNS challenge with `CLOUDFLARE_API_TOKEN_WIKI`. A token error in the log means the stack `.env` is missing the variable.
 
-Bring the host services up:
+### 8. Install the timers and run the checks
 
 ```bash
-sudo nginx -t
-sudo systemctl restart php8.3-fpm
-sudo systemctl reload nginx
+sudo /home/wiki/dev/wiki/ops/bin/restore-host-config.sh
+sudo systemctl enable --now wiki-backup-db.timer wiki-backup-files.timer wiki-update.timer
+sudo /home/wiki/dev/wiki/ops/bin/post-restore-check.sh rollerskating.wiki
 ```
 
-Then test from the server:
+`restore-host-config.sh` installs `wiki-update` from `/home/assisr/dev/docker/wiki/systemd` and the two backup units from `ops/systemd`. Leave `wiki-jobs` and `wiki-sitemap` in `ops/systemd` alone; the containers do that work now.
+
+`post-restore-check.sh` prints the containers, `nginx -t` inside `wiki-web`, the PHP and MediaWiki versions, the origin status and the timer states. It exits non-zero if the origin returns an error such as a 502; on success the origin line prints `200`.
+
+### 9. Lift read-only
 
 ```bash
-curl -I http://127.0.0.1:8081/
-curl -I https://wiki.example.com/
+sudo -u wiki sed -i '/^\$wgReadOnly = /d' /home/wiki/dev/wiki/app/config/LocalSettings.php
 ```
 
-Check:
+Wait 60 seconds, rerun the siteinfo call from Part 1 step 2 and expect no output. Then log in and save a test edit.
 
-- front page loads
-- images render
-- login works
-- a sample article opens
-- the edit form opens for an admin
-- uploads are present
+## Post-restore validation checklist
 
-Automated smoke check:
+Call the migration done after you can tick each line:
 
-```bash
-sudo /home/wiki/dev/wiki/ops/bin/post-restore-check.sh wiki.example.com
-```
+- [ ] `docker ps` shows `wiki`, `wiki-web`, `wiki-jobrunner`, `wiki-sitemap` and `caddy` up, and `wiki-mariadb` healthy
+- [ ] `docker exec wiki-web nginx -t` passes
+- [ ] the PHP and MediaWiki versions match `backups/inventory/system.txt`
+- [ ] `docker exec wiki php maintenance/run.php showSiteStats` matches the numbers you saved in Part 1
+- [ ] Special:Version lists the extensions in `backups/inventory/extensions.txt`
+- [ ] `curl -sI -H 'Host: rollerskating.wiki' http://172.17.0.1:7734/wiki/Main_Page` returns 200
+- [ ] `curl -I https://rollerskating.wiki/` returns 200 with a valid certificate
+- [ ] `find /home/wiki/dev/wiki/app/shared/images -type f | wc -l` matches the count from Part 1, and a page with images renders them
+- [ ] login and a test edit work
+- [ ] `docker exec wiki php maintenance/run.php showJobs` falls toward 0
+- [ ] `app/shared/sitemap` holds sitemap files dated today
+- [ ] `systemctl list-timers 'wiki-*'` shows three timers
+- [ ] `sudo systemctl start wiki-backup-db.service` writes a new dump, and `verify-backups.sh` passes on it
 
-### 10. Re-enable background jobs and normal access
+## Disk-loss test
 
-Once the site is confirmed healthy:
+Before you wipe the old disk, assume it failed this minute and you have the off-server copy and nothing else. Check that the copy gives you:
 
-```bash
-sudo systemctl enable --now wiki-jobs.timer
-sudo systemctl enable --now wiki-backup-db.timer wiki-backup-files.timer
-```
+- the SQL dump you took after the freeze
+- `LocalSettings.php`, `secrets/SecretsSettings.php` and `secrets/db.php`
+- the files under `app/shared/images`, with a count that matches the live server
+- the Dockerfile with its `ADD` lines, and the inventory
+- the Caddyfile and the stack `.env` with `CLOUDFLARE_API_TOKEN_WIKI` and both MariaDB passwords
+- the three timer units
 
-Remove maintenance mode from `LocalSettings.php`:
-
-```php
-// remove:
-$wgReadOnly = 'Server maintenance in progress';
-```
-
-Reload PHP-FPM:
-
-```bash
-sudo systemctl reload php8.3-fpm
-```
-
-## Post-Restore Validation Checklist
-
-Do not consider the migration finished until all of these are true:
-
-- `docker ps` shows `wiki-caddy` and `wiki-mariadb` healthy
-- nginx is serving on `127.0.0.1:8081`
-- the domain works through Cloudflare
-- the correct MediaWiki version is active
-- uploads are present
-- articles and revisions are present
-- login works
-- jobs timer is active
-- backup timers are active
-- a fresh new backup completes on the rebuilt server
-
-## Practical Recommendation
-
-Before you wipe the old machine, do one dry run mentally against the recovery set:
-
-- If the original disk disappeared right now, do I have the SQL dump?
-- Do I have `LocalSettings.php` and DB credentials?
-- Do I have `images/`?
-- Do I have the exact release version and extension list?
-- Do I have the reverse proxy and host config?
-
-If any answer is no, do not format the server yet.
+If the copy lacks any of these, keep the server running and fix the copy.

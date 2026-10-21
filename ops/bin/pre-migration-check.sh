@@ -4,8 +4,8 @@ set -euo pipefail
 BASE="${BASE:-/home/wiki/dev/wiki}"
 
 echo "stopping background jobs"
-systemctl stop wiki-jobs.timer || true
-systemctl stop wiki-jobs.service || true
+systemctl stop wiki-update.timer || true
+docker stop wiki-jobrunner wiki-sitemap || true
 
 echo "running backups"
 "${BASE}/ops/bin/backup-db.sh"

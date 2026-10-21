@@ -2,137 +2,291 @@
 
 Last updated: 2026-10-21
 
-This document is for LLM coding agents and operators. It explains the current architecture, the intended deployment model, the known drift between the deployment pack and the live server, and the operational rules that should be preserved.
-
-Read this before editing config, changing ports, adding extensions, or touching backups.
+You are reading the context file for agents and operators who work on `https://rollerskating.wiki`. Read it before you edit config, change ports, add extensions or touch backups. If a value here disagrees with the server, trust the server and fix this file.
 
 ## Purpose
 
-This repository is a deployment pack and operator knowledge base for a public MediaWiki instance at:
+The repository holds the deployment pack and operator notes for a public MediaWiki instance at:
 
 - `https://rollerskating.wiki`
 
-The wiki is intended to be:
+The owner wants a public, community-driven wiki that stays stable and maintainable in production. Editors build articles from sources, and the wiki doubles as an archive.
 
-- public
-- community-driven
-- production-oriented
-- stable and maintainable
-- source-oriented and archival
+## Docker Deployment (current since 2026-10-21)
 
-The stack was intentionally designed to keep the MediaWiki application itself off Docker while still allowing Docker-managed infrastructure around it.
+Treat this section as the source of truth. The host nginx, host php-fpm, `app/releases/` and `app/current` material further down records the old setup for rollback.
 
-## High-Level Architecture
+### Why the move
 
-The intended architecture is:
+- Ubuntu 25.10 on the host reached end of life on 2026-07-09, so host PHP stopped receiving security fixes (e.g. PHP 8.4.27 / 8.3.36, CVE-2026-109618/109619, released 2026-10-21). The upgrade to 26.04 LTS is pending.
+- MediaWiki 1.43 supports PHP 8.1–8.3 and the host ran 8.4. The image ships PHP 8.3.
+- mediawiki.org warns against MediaWiki-Docker in production. That warning covers the core dev environment (Xdebug, DevelopmentSettings.php, SQLite). For production, mediawiki.org points to the Docker Hub `mediawiki` image, which Wikimedia developers maintain and Docker's official-images pipeline rebuilds on each PHP or MediaWiki release. MediaWiki gives no formal support to any production image, hence the "unofficial, at your own risk" label (https://www.mediawiki.org/wiki/Docker, T318977). Wikimedia serves 100% of its own traffic from containers.
 
-- MediaWiki application on the host
-- host `nginx`
-- host `php-fpm`
-- Docker `caddy` as the public reverse proxy
-- Docker `mariadb`
-- Cloudflare in front of Caddy
+### Where things live
 
-However, the live environment has drifted from the initial examples in this repo.
+- Compose services: `/home/assisr/dev/docker/docker-compose-wiki.yml`, listed in the shared stack's `COMPOSE_FILE` in `/home/assisr/dev/docker/.env`
+- Build files: `/home/assisr/dev/docker/wiki/` (`Dockerfile`, `Dockerfile.web`, `nginx.conf`, `php.ini`, `LocalSettings.php`, `assets/`, `update.sh`, `systemd/`)
+- Settings, uploads and sitemap stay in this repo as bind mounts:
+  - `app/config/` -> `/config` (read-only). `/home/assisr/dev/docker/wiki/LocalSettings.php` requires `/config/LocalSettings.php` and overrides four container values: `$wgDBserver = 'wiki-mariadb'`, `$wgScribuntoDefaultEngine = 'luasandbox'`, `$wgFFmpegLocation = '/usr/bin/ffmpeg'` and `$wgJobRunRate = 0`.
+  - `app/shared/images/` -> `/var/www/html/images`
+  - `app/shared/sitemap/` -> `/srv/sitemap`
+- DB credentials: `app/config/secrets/SecretsSettings.php`, which `LocalSettings.php` requires. `app/config/secrets/db.php` holds the same values for the backup scripts. The server has no `infra/.env`.
 
-## What Is Canonical vs What Is Example
+PHP rereads `LocalSettings.php` within 60 s of a change, so you don't restart anything after a settings edit.
 
-There are two layers of truth:
+### Containers
 
-1. The **deployment pack** under this repo
-2. The **actual live server state**, which may differ
+- `wiki`: `local/rollerskating-wiki:1.43`, built `FROM mediawiki:1.43-fpm` (Debian, PHP 8.3, MediaWiki 1.43.11). The build adds ffmpeg, exif, composer and the non-bundled extensions, and bakes in the logo and favicon files from `assets/`.
+- `wiki-web`: `nginx:stable` with the hardened config. The same build copies static files out of the `wiki` image, so code and assets stay in sync. Publishes `172.17.0.1:7734`.
+- `wiki-jobrunner`: continuous `runJobs --wait` as `www-data`.
+- `wiki-sitemap`: daily `generateSitemap` as uid 1001 (`wiki`).
+- `wiki-mariadb`: compose service `mariadb`, image `mariadb:11` (now 11.8.9), bound to `127.0.0.1:4938`.
 
-Important: several example files in this repo still reflect the original baseline values and may not exactly match the live server anymore.
+### Edge: Caddy, Cloudflare and DNS
 
-Before making changes, agents should inspect the live server values and not blindly trust the examples.
+The `caddy` container in `/home/assisr/dev/docker` terminates TLS. The owner builds the image on this host with the Cloudflare DNS plugin, and its config sits at `/home/assisr/dev/docker/caddy/Caddyfile`. It proxies `rollerskating.wiki` to `host.docker.internal:7734` (= `172.17.0.1`) and sends `Host: host.docker.internal:7734` via `header_up Host {upstream_hostport}`; `wiki-web` treats that host as its default server. The same stack serves Jellyfin, requests and torrents, publishes `80/443`, and maps `host.docker.internal:host-gateway` in `extra_hosts`. You won't find a `wiki-caddy` container. Nothing live uses the repo's `infra/docker-compose.yml` or `infra/caddy`; treat them as outdated examples.
 
-## Known Live-Server Drift
+Cloudflare sits in front of Caddy in strict mode. The wiki zone has its own Cloudflare token, separate from the one other domains use:
 
-These values are known from the live setup conversation and should be treated as higher priority than older examples if they conflict.
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_API_TOKEN_WIKI`
 
-### Domain
+If the Caddyfile references a token variable, pass that variable into the container in Compose too. A Caddy log line reading `API token '' appears invalid` means the variable expanded to an empty string inside the container.
 
-Live domain:
+Use a per-site DNS challenge, since the domains belong to different Cloudflare accounts. The live block adds `encode`, the `header_up` lines and a resolver to this pattern:
 
-- `rollerskating.wiki`
+```caddy
+rollerskating.wiki {
+  reverse_proxy host.docker.internal:7734
+  tls {
+    dns cloudflare {env.CLOUDFLARE_API_TOKEN_WIKI}
+  }
+}
+```
 
-Not the old placeholders:
+Caddy's file log path and its Docker volume path may not line up. Read the container log first:
 
-- `wiki.example.com`
+```bash
+docker logs caddy
+```
 
-### PHP Version
+The container `dns` runs ddclient and updates Cloudflare records for `assisr.com` and `rollerskating.wiki`. One config holds a Cloudflare block per zone, each with its own token; separate containers would give stricter separation. If the server keeps a stable public IP, the wiki zone may not need DDNS at all.
 
-Do not hardcode the PHP version in docs, scripts, or generated config.
+### Updating
 
-Agents should derive the installed PHP major.minor version from the machine:
+- `/home/assisr/dev/docker/wiki/update.sh` backs up the DB, tags the current images `:previous`, runs `docker compose build --pull`, recreates the containers, runs `update.php --quick` and smoke-tests pages, load.php, the API, REST and Lua. On failure it re-tags `:previous` and recreates.
+- `wiki-update.timer` runs it once a day at 04:30 America/Toronto, after Watchtower (04:00 America/Toronto) and before the 06:00 reboot.
+- Watchtower excludes `wiki`, `wiki-web`, `wiki-jobrunner`, `wiki-sitemap` and `wiki-mariadb`. `update.sh` is their updater.
+- To bump Cargo, PageForms or ApprovedRevs, edit the tag in the Dockerfile and run `update.sh`. For a new MediaWiki LTS, change `FROM`, the `REL1_xx` branches and the image tags, then follow Manual:Upgrading.
+
+### Cutover status
+
+The host `wiki-jobs.timer`, `wiki-sitemap.timer`, host nginx and host `php8.4-fpm` get disabled at cutover. Cutover waits for a `mediawiki:1.43-fpm` image with PHP 8.3.36, the release that fixes CVE-2026-109618/109619.
+
+### Known open issues
+
+- Email: `$wgEnableEmail` is on, `$wgPasswordSender` is empty, and the server has no SMTP or sendmail.
+- MediaWiki sees Caddy's IP instead of the real client IP.
+
+### Rules
+
+- Check ports, paths and values against the live system (`docker compose config`, `docker inspect`, the Caddyfile) before you trust this document.
+- Publish the origin on `172.17.0.1:7734` alone unless you update the Caddyfile in the same change.
+- Run maintenance scripts with `docker exec wiki php maintenance/run.php <script>`. Add `-u www-data` for anything that writes files.
+- Keep DB and admin services off the public internet.
+- Add extensions one at a time.
+- Keep the short URL layout (`/wiki/$1`).
+- Stay on the MediaWiki LTS branch.
+- The `wiki` user has no `sudo`. After you edit config files, tell the operator to fix ownership (see Permissions).
+
+### First checks
+
+```bash
+docker ps
+docker compose -f /home/assisr/dev/docker/docker-compose-wiki.yml ps
+docker logs caddy --tail 100
+systemctl list-timers 'wiki-*'
+ls -la /home/wiki/dev/wiki/app/config
+```
+
+Also confirm the DB host port and the live `LocalSettings.php` contents.
+
+## Site Configuration
+
+These choices carry over from the host setup and still apply in Docker.
+
+### Identity
+
+- Site name: `Rollerskate Wiki`
+- Initial admin account (from the DB): `Assisr`
+
+The admin username doesn't match shell usernames or earlier guesses like `assisr.skates`.
+
+### Short URLs
+
+Pages live at `/wiki/Page_Title`, set by:
+
+- `$wgArticlePath = '/wiki/$1';`
+- `$wgUsePathInfo = true;`
+- nginx rewrite for `/wiki/`
+
+The setup follows MediaWiki's nginx short URL guidance, with the app served from the vhost root instead of `/w`.
+
+### nginx rules
+
+`/home/assisr/dev/docker/wiki/nginx.conf` carries the rules from `ops/nginx/wiki.conf.example`:
+
+- `server_name` `rollerskating.wiki` and `www.rollerskating.wiki`
+- `client_max_body_size` caps upload size
+- `/mw-config/` denied
+- no PHP execution under `/images/`
+- `X-Content-Type-Options: nosniff`
+
+`/home/assisr/dev/docker/wiki/php.ini` holds the upload limits and OPcache settings, carried over from the host's `90-mediawiki-uploads.ini` and `10-opcache.ini`.
+
+### Uploads
+
+- Uploads are on, limited to selected extensions (images and PDF at first).
+- Anonymous users and new accounts can read but can't upload. `autoconfirmed` users can.
+- The web stack can write the upload directory, and nginx blocks PHP there.
+
+Keep `$wgGitInfoCacheDirectory = '';` in `LocalSettings.php` so GitInfo doesn't probe `/gitinfo`.
+
+### Caching
+
+You get OPcache, APCu and Cloudflare (TLS, shielding, static assets). The owner chose to skip Redis and Memcached on this single-host wiki; add them when you can show an operational need.
+
+### Security posture
+
+- Caddy is the public entry point.
+- The DB port stays private (`127.0.0.1:4938`).
+- Block `/mw-config/` and remove it after install if you can.
+- Cloudflare runs in strict mode with a wiki-specific token.
+- Keep admin surfaces small.
+
+Anyone can edit, so plan for anti-abuse work and moderation. Treat uploads as attack surface, check sources, and keep the extension count low.
+
+### Extensions
+
+The Dockerfile `ADD` lines bake the non-bundled extensions into the image:
+
+- REL1_43 branches: MobileFrontend, TemplateStyles, TimedMediaHandler, Translate, UniversalLanguageSelector
+- release tags: Cargo 3.9.4, PageForms 6.0.11, ApprovedRevs 2.4.2
+- GTag from GitHub master
+
+Bundled extensions (VisualEditor, Scribunto, ConfirmEdit and others) come from the image. TimedMediaHandler and Translate get `composer install` in their own directories. Confirm the loaded set with `Special:Version` and the `wfLoadExtension` lines in `LocalSettings.php`. `Maps` came up as a candidate and isn't installed. Install new extensions one at a time and run `update` and a check after each.
+
+### Skin
+
+Stay on the Vector family. Customize with CSS, templates, the logo, the main page, infoboxes and navigation. For game-style wiki density, use Vector or Vector legacy before you consider a third-party skin.
+
+### Permissions
+
+The PHP processes in the `wiki` container run as `www-data` (uid 33, same as the host), so host ownership still decides what PHP can read.
+
+- `wiki` owns the app files.
+- `www-data` needs write access to the upload directory.
+- `www-data` needs group read on `LocalSettings.php` and the secrets, plus traverse rights on each parent directory under `/home/wiki/...`.
+
+Required state:
+
+- `/home/wiki/dev/wiki/app/config/LocalSettings.php`: `wiki:www-data`, mode `640`. Git tracks it; it holds no secrets.
+- `/home/wiki/dev/wiki/app/config/` directory: `wiki:www-data`, or at least group-traversable by `www-data`
+- `/home/wiki/dev/wiki/app/config/secrets/` directory: `wiki:www-data` with group traverse. Git ignores its contents.
+- `/home/wiki/dev/wiki/app/config/secrets/SecretsSettings.php`: `wiki:www-data`, mode `640`
+- `/home/wiki/dev/wiki/app/config/secrets/db.php`: `wiki:www-data`, mode `640`
+
+During setup PHP-FPM returned `Failed to open stream: Permission denied` for `SecretsSettings.php`. The file had `wiki:www-data` and `640`, but the `secrets/` directory belonged to `wiki:wiki`, and `www-data` couldn't enter it. Check directory ownership along with file ownership, and confirm PHP can still read a file before you tighten its mode.
+
+The `wiki` user has no `sudo`, so an agent running as `wiki` can't restart services, run `chown` or edit `/etc/`. A file you edit as `wiki` comes back as `wiki:wiki`, and PHP loses read access to `LocalSettings.php` or `db.php`, which takes the site down. After you edit config files, tell the operator to run:
+
+```bash
+sudo chown wiki:www-data /home/wiki/dev/wiki/app/config/LocalSettings.php
+sudo chown wiki:www-data /home/wiki/dev/wiki/app/config/secrets/
+sudo chown wiki:www-data /home/wiki/dev/wiki/app/config/secrets/SecretsSettings.php
+sudo chown wiki:www-data /home/wiki/dev/wiki/app/config/secrets/db.php
+```
+
+Say so in your reply; the operator won't guess.
+
+## MariaDB
+
+MariaDB runs in Docker and stores the wiki database. The owner picked it over MySQL because MediaWiki recommends `MariaDB / MySQL` and Wikimedia runs MariaDB.
+
+The first install broke when `--dbserver` contained `host:port` and the installer also tried to grant privileges with `--installdbuser` and `--installdbpass`. It issued a grant to `'mediawiki'@'127.0.0.1:4938'`, and MariaDB rejected it because host entries can't carry a port. On a non-default port, create the DB and user by hand, then run the installer without `--installdbuser` and `--installdbpass`. Keep this in mind for rebuilds and automation.
+
+## Backups
+
+Host timers, both running as root:
+
+- `wiki-backup-db`: 03:15 UTC
+- `wiki-backup-files`: 03:45 UTC
+
+No timer runs XML backups. Keep a copy of the backups off the host.
+
+The backup set covers:
+
+- logical DB dumps
+- a file archive of config, images, infra and ops
+- XML export
+- deployment inventory
+- live host config archive
+- migration bundle
+
+Scripts in `ops/bin`:
+
+- `backup-db.sh` and `restore-db.sh` fall back to `secrets/db.php` when `infra/.env` is missing.
+- `backup-files.sh` also archives `docker-compose-wiki.yml` and the docker wiki dir.
+- `backup-xml.sh` and `export-inventory.sh` use `docker exec wiki`.
+- `pre-migration-check.sh` stops `wiki-jobrunner` and `wiki-sitemap`.
+- `post-restore-check.sh` checks the containers.
+- `verify-backups.sh` checks that the dump ends with "Dump completed" and the XML ends with `</mediawiki>`.
+- `create-migration-bundle.sh` and `restore-host-config.sh` cover migration and host config.
+- `upgrade-core.sh` and `deploy-core.sh` belong to the old release-dir model (historical).
+
+A full recovery needs more than a copy of the wiki folder:
+
+- SQL dump
+- `LocalSettings.php`
+- DB secrets
+- uploads
+- infra config, including `docker-compose-wiki.yml` and `/home/assisr/dev/docker/wiki/`
+- ops scripts
+- extension inventory
+- host config
+
+Read `docs/Migrating.md` before you wipe or rebuild the server.
+
+## Historical: Host Deployment (pre-Docker)
+
+Keep this for rollback. The Docker section above replaces all of it.
+
+The original design kept MediaWiki on the host and put infrastructure in Docker:
+
+```text
+Cloudflare -> Caddy (Docker) -> host nginx -> host php-fpm -> MediaWiki
+```
+
+Drift between the repo examples and the host setup:
+
+- Domain: `rollerskating.wiki` replaced the placeholder `wiki.example.com`.
+- Origin port: `8081` became `7734` (nginx listen, Caddy upstream, test commands).
+- MariaDB host port: `127.0.0.1:3307` became `127.0.0.1:4938` (installer commands, `db.php`, backup and restore).
+- PHP: early examples used `8.3`, the host ran `8.4`. Derive the version on the machine:
 
 ```bash
 PHP_VERSION="$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;')"
 echo "${PHP_VERSION}"
 ```
 
-Use that value for:
+You plug that value into `/etc/php/${PHP_VERSION}/...`, `php${PHP_VERSION}-fpm` and the PHP-FPM pool paths. The service name:
 
-- `/etc/php/${PHP_VERSION}/...`
-- `php${PHP_VERSION}-fpm`
-- PHP-FPM pool paths
+```bash
+PHP_VERSION="$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;')"
+echo "php${PHP_VERSION}-fpm"
+```
 
-Earlier setup examples in this repo used `8.3`, and the live setup discussion later used `8.4`. Treat both as historical, not canonical.
-
-### MediaWiki Upstream Port
-
-The original example files used:
-
-- `8081`
-
-The live setup moved to:
-
-- `7734`
-
-This matters for:
-
-- nginx listen directives
-- Caddy upstream target
-- testing commands
-
-### MariaDB Host Port
-
-The original example files used:
-
-- `127.0.0.1:3307`
-
-The live setup used:
-
-- `127.0.0.1:4938`
-
-This matters for:
-
-- installer commands
-- `db.php`
-- backup and restore assumptions
-
-### Caddy / Edge Stack Location
-
-The repo contains an example Docker Compose file under:
-
-- `infra/docker-compose.yml`
-
-But the live server appears to use an existing broader Docker stack under:
-
-- `~/dev/docker`
-
-That live stack includes at least:
-
-- `caddy`
-- `dns` (`ddclient`)
-
-Agents must not assume the repo-local Compose file is the live source of truth for Caddy or ddclient.
-
-## Current Deployment Model
-
-### Wiki Filesystem Layout
-
-The intended live root is:
+Filesystem layout:
 
 ```text
 /home/wiki/dev/wiki/
@@ -149,525 +303,27 @@ The intended live root is:
   docs/
 ```
 
-The deployment pack in this repo mirrors that structure for reproducibility.
+Release model: you unpacked core into `app/releases/mediawiki-x.y.z/`, pointed the `app/current` symlink at it, and symlinked `LocalSettings.php` (canonical at `/home/wiki/dev/wiki/app/config/LocalSettings.php`) into `/home/wiki/dev/wiki/app/current/LocalSettings.php`. The host started on MediaWiki `1.43.6` and reached `1.43.11` on 2026-10-21. Logo, favicon and license icon files sat in the release's `resources/assets/`; the copies in `app/shared/assets/` are older and nothing serves them. Upgrades went:
 
-### Release Management
+1. back up
+2. unpack the new release into a new release dir
+3. re-link `LocalSettings.php` and `images`
+4. reinstall or update non-bundled extensions
+5. run `maintenance/run.php update`
+6. test, then switch `current`
 
-MediaWiki is release-directory based:
+Origin binding: host curl to `127.0.0.1:7734` worked, but the Caddy container couldn't reach `host.docker.internal:7734`. A host nginx behind a containerized Caddy has to listen on the Docker bridge IP (or `0.0.0.0:<port>` as a stopgap), and a `127.0.0.1`-only bind breaks the proxy.
 
-- core is unpacked into `app/releases/mediawiki-x.y.z/`
-- `app/current` is a symlink to the active release
-- uploads live in `app/shared/images`
-- `LocalSettings.php` lives outside the release tree and is symlinked into the release
+PHP-FPM: the repo prefers a version-agnostic socket, `/run/php/php-fpm-wiki.sock`, while the live pool and nginx use `/run/php/php8.4-fpm-wiki.sock` (verified 2026-10-21) and the `ops/` examples match live. Change both together. The pool's `open_basedir` must include `/dev/null`, because Scribunto's LuaStandalone opens it as the Lua binary's stderr, and `{{#invoke:}}` fails without it. Keep the upload temp dir and MediaWiki paths inside `open_basedir` too. Upload limits went in `/etc/php/<current-version>/fpm/conf.d/90-mediawiki-uploads.ini`, alongside the OPcache settings.
 
-This must be preserved. Do not convert the app into an in-place mutable tree.
-
-### Web Request Flow
-
-Public traffic path:
-
-```text
-Cloudflare -> Caddy (Docker) -> host nginx -> host php-fpm -> MediaWiki
-```
-
-### Important Upstream Rule
-
-If Caddy runs in Docker and proxies to the host, the host nginx listener cannot remain bound to `127.0.0.1` only.
-
-This caused a real failure during setup:
-
-- host curl to `127.0.0.1:7734` worked
-- Caddy container could not reach `host.docker.internal:7734`
-
-So for container-to-host proxying, nginx must listen on:
-
-- `0.0.0.0:<port>` temporarily
-- or preferably the Docker bridge IP on the host
-
-Do not reintroduce `127.0.0.1`-only binding if Caddy must reach the origin from a container.
-
-## nginx
-
-### Role
-
-Host nginx serves MediaWiki and forwards PHP requests to the dedicated PHP-FPM pool.
-
-### Important Live Characteristics
-
-- `server_name` should be `rollerskating.wiki` and optionally `www.rollerskating.wiki`
-- the wiki origin currently uses a host-side port such as `7734`
-- upload size limits are enforced in nginx using `client_max_body_size`
-- `/mw-config/` is denied
-- `/images/` must not allow PHP execution
-- `X-Content-Type-Options: nosniff` should be present
-
-### Short URL Pattern
-
-The chosen short URL shape is:
-
-- `/wiki/Page_Title`
-
-This is implemented with:
-
-- `$wgArticlePath = '/wiki/$1';`
-- `$wgUsePathInfo = true;`
-- nginx rewrite for `/wiki/`
-
-This setup is adapted from the MediaWiki nginx short URL guidance, but the app itself is still served from the vhost root, not from `/w`.
-
-## PHP-FPM
-
-### Role
-
-Host PHP-FPM runs MediaWiki under a dedicated pool.
-
-### Current Direction
-
-Use the currently installed PHP major.minor version on the machine rather than a hardcoded value.
-
-For the PHP-FPM service name:
-
-```bash
-PHP_VERSION="$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;')"
-echo "php${PHP_VERSION}-fpm"
-```
-
-For the dedicated socket path, this deployment pack prefers a version-agnostic custom socket:
-
-- `/run/php/php-fpm-wiki.sock`
-
-But the live pool and nginx use `/run/php/php8.4-fpm-wiki.sock` (verified 2026-10-21), and the `ops/` examples match live. Change both together if you migrate.
-
-### open_basedir and Scribunto
-
-The pool's `open_basedir` must include `/dev/null`: Scribunto's LuaStandalone opens it as the Lua binary's stderr, and without it every `{{#invoke:}}` fails. Keep `$wgGitInfoCacheDirectory = '';` in `LocalSettings.php` so GitInfo doesn't probe `/gitinfo` outside `open_basedir`.
-
-### Upload Settings
-
-Upload limits belong in PHP-FPM config, not Apache and not `LocalSettings.php`.
-
-Typical override file:
-
-- `/etc/php/<current-version>/fpm/conf.d/90-mediawiki-uploads.ini`
-
-OPcache settings also belong in PHP-FPM config.
-
-### open_basedir
-
-The PHP-FPM pool config includes `open_basedir`. If upload behavior changes, ensure the upload temp dir and MediaWiki paths are still permitted.
-
-## Caddy
-
-### Role
-
-Caddy is the public reverse proxy and TLS terminator, running in Docker.
-
-### Current Live Pattern
-
-The user already has an existing Docker/Caddy setup for other applications such as Jellyfin, requests, torrents, etc.
-
-Observed characteristics:
-
-- Docker Compose under `~/dev/docker`
-- container name `caddy`
-- `extra_hosts` includes `host.docker.internal:host-gateway`
-- Caddy publishes `80/443`
-
-### Cloudflare Tokens
-
-The wiki uses a separate Cloudflare token from the main account/token used by other domains.
-
-Expected env vars:
-
-- `CLOUDFLARE_API_TOKEN`
-- `CLOUDFLARE_API_TOKEN_WIKI`
-
-Important operational rule:
-
-- if a token env var is referenced in the Caddyfile, it must also be explicitly passed into the Docker container via Compose
-- if Caddy logs show `API token '' appears invalid`, that means the env var expanded to an empty string inside the container
-
-### Per-Site DNS Challenge
-
-Do not use one global Cloudflare DNS credential if different domains belong to different Cloudflare accounts.
-
-Preferred pattern:
-
-```caddy
-rollerskating.wiki {
-  reverse_proxy host.docker.internal:7734
-  tls {
-    dns cloudflare {env.CLOUDFLARE_API_TOKEN_WIKI}
-  }
-}
-```
-
-### Logging
-
-Be aware that the user’s Caddy file log path and Docker volume path may not match perfectly in the live stack. When diagnosing, prefer:
-
-```bash
-docker logs caddy
-```
-
-over assuming file logs are persisted exactly where intended.
-
-## ddclient
-
-### Role
-
-The live Docker stack also includes `ddclient` under the container name:
-
-- `dns`
-
-It updates Cloudflare DNS records.
-
-### Multi-Account Pattern
-
-The configuration can contain multiple Cloudflare blocks for different zones and different tokens. That is supported, but separate containers/configs would be cleaner if strict separation is desired.
-
-Known live zones discussed:
-
-- `assisr.com`
-- `rollerskating.wiki`
-
-### Important Note
-
-If the server has a stable dedicated public IP, ddclient may not be necessary for the wiki zone at all. Do not assume DDNS is required unless the IP actually changes.
-
-## MariaDB
-
-### Role
-
-MariaDB runs in Docker and stores the MediaWiki database.
-
-### Choice
-
-MariaDB was chosen over MySQL because:
-
-- MediaWiki recommends `MariaDB / MySQL`
-- Wikimedia uses MariaDB
-- it is the safer default for MediaWiki operations
-
-### Important Install Caveat
-
-The initial installer flow hit a real issue when `--dbserver` included `host:port` and the installer also tried to grant DB privileges using `--installdbuser` and `--installdbpass`.
-
-Observed failure mode:
-
-- installer tried to grant to `'mediawiki'@'127.0.0.1:4938'`
-- MariaDB rejected that because host entries are not `host:port`
-
-Operational rule:
-
-- on non-default host ports, prefer pre-creating the DB and DB user manually
-- then run the MediaWiki installer without `--installdbuser` and `--installdbpass`
-
-This is important context for future rebuilds or automation work.
-
-## MediaWiki Application
-
-### Current Version
-
-The installation was based on MediaWiki `1.43.6` and upgraded to `1.43.11` on 2026-10-21.
-
-Custom logo, favicon and license icon files live in the release's `resources/assets/` (referenced from `LocalSettings.php`). The copies in `app/shared/assets/` are older and not what is served.
-
-### Site Identity
-
-Known site name chosen during setup:
-
-- `Rollerskate Wiki`
-
-Known initial admin account discovered from the DB:
-
-- `Assisr`
-
-Do not assume the admin username matches shell usernames or prior guesses like `assisr.skates`.
-
-### LocalSettings.php
-
-Canonical live config path:
-
-- `/home/wiki/dev/wiki/app/config/LocalSettings.php`
-
-Symlink expected at:
-
-- `/home/wiki/dev/wiki/app/current/LocalSettings.php`
-
-### Current Settings Direction
-
-The following choices were made during setup:
-
-- uploads enabled
-- short URLs via `/wiki/$1`
-- caching baseline is OPcache + APCu
-- public-read model
-- uploads restricted to trusted users, not anonymous users
-
-### File Upload Policy
-
-Uploads are enabled, but the intended safe baseline is:
-
-- only selected file extensions, initially images and PDF
-- upload directory writable by the web stack
-- no PHP execution allowed in uploads
-- `nosniff` response header enabled
-
-### Upload Permissions
-
-The intended `LocalSettings.php` policy is:
-
-- public can read
-- public cannot upload
-- new users cannot upload immediately
-- `autoconfirmed` can upload
-
-### Permissions Model
-
-This area caused real problems during setup.
-
-Key points:
-
-- app code should be owned by `wiki`
-- upload directory should be writable by `www-data`
-- `LocalSettings.php` and secrets files must be readable by the web stack
-- parent directories under `/home/wiki/...` must be traversable by nginx/PHP
-- **both files and their parent directories** must be group-accessible by `www-data`
-
-### Config File Permissions
-
-`LocalSettings.php` is committed to version control (it contains no secrets). It must still be readable by PHP-FPM.
-
-Required state:
-
-- `/home/wiki/dev/wiki/app/config/LocalSettings.php` — `wiki:www-data`, mode `640`
-- `/home/wiki/dev/wiki/app/config/` directory — `wiki:www-data` (or at least group-traversable by `www-data`)
-
-### Secrets File Permissions
-
-Secrets live in `app/config/secrets/` and are gitignored. The directory and every file PHP-FPM needs to read must be group-owned by `www-data`.
-
-Required state:
-
-- `/home/wiki/dev/wiki/app/config/secrets/` directory — `wiki:www-data` (group must have traverse permission)
-- `/home/wiki/dev/wiki/app/config/secrets/SecretsSettings.php` — `wiki:www-data`, mode `640`
-- `/home/wiki/dev/wiki/app/config/secrets/db.php` — `wiki:www-data`, mode `640`
-
-Important known failure:
-
-- PHP-FPM returned `Failed to open stream: Permission denied` for `SecretsSettings.php`
-- the file itself had correct ownership (`wiki:www-data`, `640`)
-- the cause was the **parent directory** `secrets/` being owned by `wiki:wiki` — `www-data` could not traverse into it
-
-Practical rules:
-
-- if a file is `640 wiki:www-data`, its parent directory must also be group-accessible by `www-data`
-- one workable model is `wiki:www-data` on both the directory and files
-- always check directory ownership, not just file ownership
-
-Agents must be very careful not to tighten permissions so far that the app becomes unreadable.
-
-### The `wiki` User Is Restricted
-
-The `wiki` user does not have `sudo` access. This has direct operational consequences:
-
-- agents running as `wiki` **cannot** restart services (`nginx`, `php-fpm`, etc.)
-- agents running as `wiki` **cannot** change file ownership (`chown`)
-- agents running as `wiki` **cannot** edit system config under `/etc/`
-
-When an agent edits a file that was previously owned by `wiki:www-data`, the resulting file will be owned by `wiki:wiki` because the agent cannot preserve or restore the `www-data` group. This **will break the live site** for any file that PHP-FPM needs to read (e.g. `LocalSettings.php`, `db.php`).
-
-After any edit to config files, agents **must** tell the operator to run:
-
-```bash
-sudo chown wiki:www-data /home/wiki/dev/wiki/app/config/LocalSettings.php
-sudo chown wiki:www-data /home/wiki/dev/wiki/app/config/secrets/
-sudo chown wiki:www-data /home/wiki/dev/wiki/app/config/secrets/SecretsSettings.php
-sudo chown wiki:www-data /home/wiki/dev/wiki/app/config/secrets/db.php
-```
-
-Similarly, after config changes that affect loaded extensions or PHP, agents must tell the operator to restart PHP-FPM:
+After config changes that touched extensions or PHP, the operator restarted PHP-FPM:
 
 ```bash
 PHP_VERSION="$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;')"
 sudo systemctl restart "php${PHP_VERSION}-fpm"
 ```
 
-Do not silently assume these steps will happen. Always surface them explicitly.
-
-## Caching
-
-Chosen baseline:
-
-- OPcache
-- APCu
-- Cloudflare for TLS, shielding, static assets
-- no Redis
-- no Memcached
-
-This is a deliberate simplicity choice for a single-host public wiki.
-
-Do not casually add Redis or Memcached unless there is an operational need.
-
-## Security Posture
-
-The intended security posture is:
-
-- only Caddy is public
-- no public DB port
-- no public host nginx admin/origin port unless necessary for container reachability
-- `/mw-config/` blocked and ideally removed after install
-- no PHP execution under `/images`
-- strict Cloudflare mode
-- separate Cloudflare token for the wiki
-- minimal exposed admin surfaces
-
-### Community-Wiki Risks
-
-Because this is a public community wiki, agents should assume:
-
-- anti-abuse and moderation matter
-- uploads are a risk surface
-- source quality matters
-- extension count should stay low
-
-## Extensions
-
-### Current State
-
-Treat extension state as unknown until confirmed via:
-
-- `Special:Version`
-- live `LocalSettings.php`
-- release `extensions/` directory
-
-Do not assume all discussed extensions are already installed.
-
-### Planned / Recommended Extensions
-
-These were discussed as useful candidates:
-
-- `Cargo`
-- `Page Forms`
-- `TimedMediaHandler`
-- `Approved Revs`
-- `Maps`
-- `Translate`
-
-But they should be installed deliberately, one at a time, with `update` and verification after each.
-
-### Rule For Production
-
-Do not bulk-install all planned extensions on a live public wiki in one pass.
-
-Install sequence should be phased and verified.
-
-## Skins / UI Strategy
-
-The current strategic recommendation is:
-
-- stay on the default Vector family initially
-- customize with CSS, templates, logo, main page, infoboxes, and navigation
-- avoid a custom third-party skin early
-
-For game-style wiki density, Vector or Vector legacy is the preferred direction, not a skin swap.
-
-## Backups
-
-Backups are critical and already have scripted support in this repo.
-
-### Backup Types
-
-The intended backup set includes:
-
-- logical DB dumps
-- file archive for config, images, infra, ops
-- XML export
-- deployment inventory
-- live host config archive
-- migration bundle
-
-### Important Scripts
-
-Core scripts:
-
-- `ops/bin/backup-db.sh`
-- `ops/bin/backup-files.sh`
-- `ops/bin/backup-xml.sh`
-- `ops/bin/export-inventory.sh`
-- `ops/bin/verify-backups.sh`
-- `ops/bin/create-migration-bundle.sh`
-- `ops/bin/pre-migration-check.sh`
-- `ops/bin/restore-db.sh`
-- `ops/bin/restore-host-config.sh`
-- `ops/bin/post-restore-check.sh`
-
-### Recovery Principle
-
-The recovery set is not just “copy the wiki folder”.
-
-It must include:
-
-- SQL dump
-- `LocalSettings.php`
-- DB secrets
-- uploads
-- infra config
-- ops scripts
-- extension inventory
-- host config
-
-## Maintenance
-
-### Routine Expectations
-
-Agents should assume the operator wants:
-
-- stable LTS MediaWiki branch
-- release-directory upgrades
-- Cloudflare in front
-- low extension count
-- conservative caching
-- off-host backups
-
-### Upgrade Pattern
-
-Upgrades should follow this sequence:
-
-1. back up first
-2. unpack new MediaWiki release into a new release dir
-3. re-link `LocalSettings.php` and `images`
-4. reinstall/update non-bundled extensions for the new release
-5. run `maintenance/run.php update`
-6. test before switching `current`
-
-### Migration / Rebuild Pattern
-
-The repo already contains a dedicated migration runbook:
-
-- `docs/Migrating.md`
-
-Use it before wiping or rebuilding the server.
-
-## Agent Rules
-
-If you are an LLM coding agent working on this setup:
-
-- inspect the live server before trusting example files
-- do not assume the repo examples match the live PHP version or ports
-- do not bind the nginx origin to `127.0.0.1` if Caddy in Docker must reach it
-- do not tighten `LocalSettings.php` permissions until you confirm nginx/PHP-FPM can still read it
-- do not expose DB/admin services publicly
-- do not add many extensions at once
-- do not change short URL layout casually
-- do not move the app into a mutable single release tree
-- do not assume Caddy and ddclient live under this repo; the live edge stack may be elsewhere
-- the `wiki` user has no `sudo` — after editing config files, tell the operator to fix ownership and restart services
-
-## Recommended First Checks For Future Agents
-
-Before changing anything, run or inspect:
+First checks on the host stack:
 
 ```bash
 php -v
@@ -680,16 +336,8 @@ readlink -f /home/wiki/dev/wiki/app/current
 ls -la /home/wiki/dev/wiki/app/config
 ```
 
-Also confirm:
-
-- actual Caddy Compose path
-- actual ddclient config path
-- actual DB host port
-- actual nginx listen port
-- actual `LocalSettings.php` contents
-
 ## Related Documents
 
-- [README.md](/Users/assisrmatheus/Developer/wiki/README.md)
-- [OPERATIONS.md](/Users/assisrmatheus/Developer/wiki/docs/OPERATIONS.md)
-- [Migrating.md](/Users/assisrmatheus/Developer/wiki/docs/Migrating.md)
+- [README.md](README.md)
+- [OPERATIONS.md](docs/OPERATIONS.md)
+- [Migrating.md](docs/Migrating.md)

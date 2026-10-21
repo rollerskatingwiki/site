@@ -23,13 +23,14 @@ fi
 
 echo "verifying ${DB_FILE}"
 gzip -t "${DB_FILE}"
-zcat "${DB_FILE}" | head -n 20 > /dev/null
+# Read to the end: `| head` would SIGPIPE zcat and fail under pipefail
+zcat "${DB_FILE}" | tail -n 1 | grep -q "Dump completed"
 
 echo "verifying ${FILES_FILE}"
-tar -tzf "${FILES_FILE}" | head -n 50 > /dev/null
+tar -tzf "${FILES_FILE}" > /dev/null
 
 echo "verifying ${XML_FILE}"
-head -n 20 "${XML_FILE}" > /dev/null
+tail -n 1 "${XML_FILE}" | grep -q "</mediawiki>"
 
 echo "verified:"
 echo "  db: ${DB_FILE}"

@@ -8,7 +8,7 @@ DEST_FILE="${DEST_DIR}/wiki-full-${TS}.xml"
 
 mkdir -p "${DEST_DIR}"
 
-sudo -u wiki php "${BASE}/app/current/maintenance/run.php" dumpBackup --full > "${DEST_FILE}"
+docker exec -u www-data wiki php maintenance/run.php dumpBackup --full > "${DEST_FILE}"
 
 echo "wrote ${DEST_FILE}"
 

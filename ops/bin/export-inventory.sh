@@ -3,16 +3,21 @@ set -euo pipefail
 
 BASE="${BASE:-/home/wiki/dev/wiki}"
 OUT_DIR="${BASE}/backups/inventory"
-CURRENT_LINK="${BASE}/app/current"
-CURRENT_RELEASE="$(readlink -f "${CURRENT_LINK}" || true)"
+# MediaWiki runs in the "wiki" container (built from ~/dev/docker/wiki)
+APP_CONTAINER="${APP_CONTAINER:-wiki}"
 
 mkdir -p "${OUT_DIR}"
+
+in_app() {
+  docker exec "${APP_CONTAINER}" "$@"
+}
 
 {
   echo "DATE=$(date --iso-8601=seconds)"
   echo "HOSTNAME=$(hostname)"
-  echo "CURRENT_RELEASE=${CURRENT_RELEASE}"
-  echo "PHP_VERSION=$(php -r 'echo PHP_VERSION;')"
+  echo "MEDIAWIKI_VERSION=$(echo 'echo MW_VERSION;' | docker exec -i "${APP_CONTAINER}" php maintenance/run.php eval)"
+  echo "PHP_VERSION=$(in_app php -r 'echo PHP_VERSION;')"
+  echo "APP_IMAGE=$(docker inspect "${APP_CONTAINER}" --format '{{.Config.Image}} {{.Image}}')"
   echo "DOCKER_VERSION=$(docker --version 2>/dev/null || true)"
   echo "COMPOSE_VERSION=$(docker compose version 2>/dev/null || true)"
   echo
@@ -22,36 +27,23 @@ mkdir -p "${OUT_DIR}"
   echo "[docker ps]"
   docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' 2>/dev/null || true
   echo
-  echo "[nginx version]"
-  nginx -v 2>&1 || true
-  echo
   echo "[php modules]"
-  php -m | sort
+  in_app php -m | sort
 } > "${OUT_DIR}/system.txt"
 
-if [[ -n "${CURRENT_RELEASE}" && -d "${CURRENT_RELEASE}/extensions" ]]; then
-  find "${CURRENT_RELEASE}/extensions" -maxdepth 1 -mindepth 1 -type d | sort > "${OUT_DIR}/extensions.txt"
-else
-  : > "${OUT_DIR}/extensions.txt"
-fi
+# name and declared version of every extension/skin baked into the image
+list_components() {
+  in_app php -r '
+    foreach (glob($argv[1] . "/*/" . $argv[2]) as $f) {
+      $j = json_decode(file_get_contents($f), true);
+      echo basename(dirname($f)), " ", $j["version"] ?? "-", "\n";
+    }' "$1" "$2"
+}
 
-if [[ -n "${CURRENT_RELEASE}" && -d "${CURRENT_RELEASE}/skins" ]]; then
-  find "${CURRENT_RELEASE}/skins" -maxdepth 1 -mindepth 1 -type d | sort > "${OUT_DIR}/skins.txt"
-else
-  : > "${OUT_DIR}/skins.txt"
-fi
+list_components extensions extension.json > "${OUT_DIR}/extensions.txt"
+list_components skins skin.json > "${OUT_DIR}/skins.txt"
 
-: > "${OUT_DIR}/extensions-git.txt"
-while read -r dir; do
-  [[ -z "${dir}" ]] && continue
-  if [[ -d "${dir}/.git" ]]; then
-    {
-      echo "[${dir}]"
-      git -C "${dir}" branch --show-current || true
-      git -C "${dir}" rev-parse HEAD || true
-      echo
-    } >> "${OUT_DIR}/extensions-git.txt"
-  fi
-done < "${OUT_DIR}/extensions.txt"
+# Exact refs come from the Dockerfile's ADD lines
+grep -E '^ADD ' /home/assisr/dev/docker/wiki/Dockerfile > "${OUT_DIR}/extensions-git.txt" || true
 
 echo "wrote ${OUT_DIR}"

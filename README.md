@@ -1,28 +1,28 @@
 # MediaWiki Deployment Pack
 
-This directory contains a production-oriented MediaWiki deployment pack built around:
+This repo holds the settings, uploads, sitemap, ops scripts, backups and docs for the wiki. The wiki itself runs in Docker, in five containers:
 
-- MediaWiki on the host
-- `nginx` on the host
-- `php-fpm` on the host
-- `caddy` in Docker as the public reverse proxy
-- `mariadb` in Docker with bind-mounted `./` data
+- `wiki`: PHP-FPM, built `FROM mediawiki:1.43-fpm`
+- `wiki-web`: nginx
+- `wiki-jobrunner`: the job queue runner
+- `wiki-sitemap`: daily sitemap generation
+- `wiki-mariadb`: the database
 
-Start with [docs/OPERATIONS.md](/Users/assisrmatheus/Developer/wiki/docs/OPERATIONS.md).
+`/home/assisr/dev/docker/docker-compose-wiki.yml` defines these containers, and `/home/assisr/dev/docker/wiki` holds their build files. The `caddy` container in the same stack is the public reverse proxy and sits behind Cloudflare. The containers bind-mount the config, uploads and sitemap from this repo.
 
-## Why this shape
-
-This keeps the MediaWiki application close to the official install and upgrade path, while still making Docker-managed service data easy to move or back up from one directory tree.
-
-It also keeps host features such as `ffmpeg`, ImageMagick, and extension installs straightforward.
+Read [AGENTS.md](AGENTS.md) for the architecture and the rules before you change anything. For day-to-day work, use [docs/OPERATIONS.md](docs/OPERATIONS.md) and [docs/Migrating.md](docs/Migrating.md).
 
 ## Directory map
 
 ```text
 wiki/
-  app/          MediaWiki releases, shared uploads, config examples
-  infra/        Docker Compose, Caddy, MariaDB config
-  ops/          Host config examples, scripts, systemd units
-  backups/      Logical and file backups
-  docs/         Runbook and operational notes
+  app/config/          MediaWiki settings (bind-mounted)
+  app/shared/images/   Uploads (bind-mounted)
+  app/shared/sitemap/  Sitemap (bind-mounted)
+  app/releases/        Pre-Docker host install, kept for rollback
+  app/current          Pre-Docker host install, kept for rollback
+  ops/bin/             Backup, restore and maintenance scripts
+  backups/             Database, file and XML backups
+  docs/                Runbooks and notes
+  infra/               Outdated example Compose and Caddy files; the live stack doesn't use them
 ```

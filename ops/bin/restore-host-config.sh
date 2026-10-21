@@ -2,19 +2,16 @@
 set -euo pipefail
 
 BASE="${BASE:-/home/wiki/dev/wiki}"
-PHP_VERSION="${PHP_VERSION:-8.3}"
+DOCKER_DIR="${DOCKER_DIR:-/home/assisr/dev/docker}"
 
-install -D -m 0644 "${BASE}/ops/nginx/wiki.conf.example" /etc/nginx/sites-available/wiki.conf
-ln -sfn /etc/nginx/sites-available/wiki.conf /etc/nginx/sites-enabled/wiki.conf
-install -D -m 0644 "${BASE}/ops/php-fpm/wiki.conf.example" "/etc/php/${PHP_VERSION}/fpm/pool.d/wiki.conf"
-install -D -m 0644 "${BASE}/ops/php-fpm/10-opcache.ini.example" "/etc/php/${PHP_VERSION}/fpm/conf.d/10-opcache.ini"
-
-install -D -m 0644 "${BASE}/ops/systemd/wiki-jobs.service" /etc/systemd/system/wiki-jobs.service
-install -D -m 0644 "${BASE}/ops/systemd/wiki-jobs.timer" /etc/systemd/system/wiki-jobs.timer
+# The Docker stack (docker-compose-wiki.yml, wiki/, caddy/Caddyfile) is restored from
+# the live-host-config archive into ${DOCKER_DIR}; this installs the host timers.
+install -D -m 0644 "${DOCKER_DIR}/wiki/systemd/wiki-update.service" /etc/systemd/system/wiki-update.service
+install -D -m 0644 "${DOCKER_DIR}/wiki/systemd/wiki-update.timer" /etc/systemd/system/wiki-update.timer
 install -D -m 0644 "${BASE}/ops/systemd/wiki-backup-db.service" /etc/systemd/system/wiki-backup-db.service
 install -D -m 0644 "${BASE}/ops/systemd/wiki-backup-db.timer" /etc/systemd/system/wiki-backup-db.timer
 install -D -m 0644 "${BASE}/ops/systemd/wiki-backup-files.service" /etc/systemd/system/wiki-backup-files.service
 install -D -m 0644 "${BASE}/ops/systemd/wiki-backup-files.timer" /etc/systemd/system/wiki-backup-files.timer
 
 systemctl daemon-reload
-echo "restored host configuration"
+echo "restored host timers; start the stack with: cd ${DOCKER_DIR} && docker compose up -d mariadb wiki wiki-web wiki-jobrunner wiki-sitemap"

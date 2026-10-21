@@ -2,20 +2,21 @@
 set -euo pipefail
 
 BASE="${BASE:-/home/wiki/dev/wiki}"
+DOCKER_DIR="${DOCKER_DIR:-/home/assisr/dev/docker}"
 DEST_DIR="${BASE}/backups/files"
-PHP_VERSION="${PHP_VERSION:-8.3}"
 TS="$(date +%F-%H%M%S)"
 DEST_FILE="${DEST_DIR}/live-host-config-${TS}.tar.gz"
 
 mkdir -p "${DEST_DIR}"
 
+# The wiki runs in Docker: its build files and compose service live in the shared
+# Docker stack; only backup/update timers remain on the host.
 paths=(
-  "/etc/nginx/sites-available/wiki.conf"
-  "/etc/nginx/sites-enabled/wiki.conf"
-  "/etc/php/${PHP_VERSION}/fpm/pool.d/wiki.conf"
-  "/etc/php/${PHP_VERSION}/fpm/conf.d/10-opcache.ini"
-  "/etc/systemd/system/wiki-jobs.service"
-  "/etc/systemd/system/wiki-jobs.timer"
+  "${DOCKER_DIR}/docker-compose-wiki.yml"
+  "${DOCKER_DIR}/wiki"
+  "${DOCKER_DIR}/caddy/Caddyfile"
+  "/etc/systemd/system/wiki-update.service"
+  "/etc/systemd/system/wiki-update.timer"
   "/etc/systemd/system/wiki-backup-db.service"
   "/etc/systemd/system/wiki-backup-db.timer"
   "/etc/systemd/system/wiki-backup-files.service"

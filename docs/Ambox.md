@@ -1,8 +1,8 @@
-# Msgbox — Message Box Templates
+# Msgbox: Message Box Templates
 
-This document contains ready-to-paste wikitext for the `{{Msgbox}}` base template and all shortcut templates.
+Paste the wikitext below into your wiki to create the `{{Msgbox}}` base template and its shortcut templates.
 
-All styles use [Codex design tokens](https://doc.wikimedia.org/codex/latest/design-tokens/) — CSS variables that Vector 2022, Minerva (mobile), and dark mode understand natively. No `MediaWiki:Common.css` edits required.
+The styles use [Codex design tokens](https://doc.wikimedia.org/codex/latest/design-tokens/), CSS variables that Vector 2022, Minerva (mobile) and dark mode support. You don't need to edit `MediaWiki:Common.css`.
 
 ---
 
@@ -20,7 +20,7 @@ All styles use [Codex design tokens](https://doc.wikimedia.org/codex/latest/desi
    - [Template:Fact checked](#templatefact-checked)
    - [Template:Unverified](#templateunverified)
 3. [Codex Design Tokens Reference](#codex-design-tokens-reference)
-4. [How to Add a New Type](#how-to-add-a-new-type)
+4. [Adding a New Type](#adding-a-new-type)
 
 ---
 
@@ -28,26 +28,26 @@ All styles use [Codex design tokens](https://doc.wikimedia.org/codex/latest/desi
 
 **Page to create:** `Template:Msgbox`
 
-This is the base meta-template. All shortcut templates build on top of it. The documentation is embedded directly in the template page using `<noinclude>` — it only appears when viewing the template itself, never on articles that use it.
+`Template:Msgbox` is the base meta-template, and each shortcut template calls it. The template page carries its own documentation inside `<noinclude>`, so you see that documentation on the template page and not on the articles that use it.
 
-### What it does
+### Behavior
 
-- Renders a left-bordered message box with optional icon
-- Supports two modes:
-  - **Structured:** `issue` + `fix` for simple problem/solution messages
-  - **Freeform:** `text` for rich content (lists, multiple paragraphs, any wikitext)
-- `text` overrides `issue`/`fix` when provided — use it for complex content
-- Accepts `icon` parameter for an emoji or image to the left of the text
-- Accepts `accent` and `bg` parameters to control the color scheme
+- Renders a message box with a colored left border and an optional icon
+- Offers two modes:
+  - **Structured:** `issue` + `fix` for a short problem and its fix
+  - **Freeform:** `text` for rich content such as lists or several paragraphs of wikitext
+- If you set `text`, it overrides `issue` and `fix`, so use `text` for complex content
+- `icon` takes an emoji or image to show left of the text
+- `accent` and `bg` set the color scheme
 - Defaults to a neutral blue notice style
-- Bold and icons are applied by shortcut templates, not the base — this avoids rendering artifacts when the base template page is viewed directly
-- Automatically adapts to light/dark mode via Codex tokens
-- Falls back to hardcoded hex values for skins that don't support CSS variables
-- Includes TemplateData for VisualEditor support — editors can insert and edit the template via the VE template dialog
+- The shortcut templates add the bold text and icons, so the base template page renders without artifacts when you open it
+- Adapts to light and dark mode through Codex tokens
+- Falls back to hardcoded hex values on skins without CSS variable support
+- Ships TemplateData, so editors can insert and edit the template from the VisualEditor template dialog
 
 ### Wikitext
 
-Paste the entire block below into `Template:Msgbox`:
+Paste this block into `Template:Msgbox`:
 
 ```wikitext
 <div style="border: 1px solid {{{border|var(--border-color-base, #a2a9b1)}}}; border-left: 10px solid {{{accent|var(--border-color-progressive, #36c)}}}; background-color: {{{bg|var(--background-color-neutral-subtle, #f8f9fa)}}}; color: var(--color-base, #202122); padding: 8px 12px; margin-bottom: 1em; line-height: 1.5; box-sizing: border-box; display: flex; align-items: center; gap: 10px;">
@@ -404,9 +404,9 @@ These templates wrap <code><nowiki>{{Msgbox}}</nowiki></code> with preset styles
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `text` | No | Freeform rich content. Overrides `issue`/`fix`. Supports any wikitext. |
-| `issue` or `1` | No | Problem statement (bold applied by calling templates). Used when `text` is not provided. |
-| `fix` or `2` | No | What should be done to fix it. Used when `text` is not provided. |
+| `text` | No | Freeform content in any wikitext. Overrides `issue` and `fix`. |
+| `issue` or `1` | No | Problem statement. The calling template makes it bold. Ignored if you set `text`. |
+| `fix` or `2` | No | How to fix the problem. Ignored if you set `text`. |
 | `icon` | No | Emoji or image shown to the left of the text. Default: none |
 | `accent` | No | Left border color (CSS value or Codex token). Default: progressive blue |
 | `bg` | No | Background color. Default: neutral subtle |
@@ -416,7 +416,7 @@ These templates wrap <code><nowiki>{{Msgbox}}</nowiki></code> with preset styles
 
 ## Shortcut Templates
 
-Each of these wraps `{{Msgbox}}` with preset colors and icons so editors don't need to remember Codex tokens. Bold is applied in these templates, not in the base. Documentation is embedded in each template via `<noinclude>`.
+Each shortcut wraps `{{Msgbox}}` with preset colors and an icon, so editors can skip the Codex tokens. These templates add the bold text, and each one carries its documentation inside `<noinclude>`.
 
 ---
 
@@ -424,7 +424,7 @@ Each of these wraps `{{Msgbox}}` with preset colors and icons so editors don't n
 
 **Page to create:** `Template:Stub`
 
-Uses the default notice style (blue). Shown on articles that are too short and need expansion.
+Style: notice (blue). Add it to articles that are too short and need expanding.
 
 ```wikitext
 {{Msgbox
@@ -454,9 +454,9 @@ Uses the default notice style (blue). Shown on articles that are too short and n
 
 **Page to create:** `Template:Citation needed`
 
-Uses the warning style (orange). Shown on articles that lack sources or references.
+Style: warning (orange). Add it to articles that lack sources.
 
-The optional first unnamed parameter changes "article" to "section" or any other word.
+To tag a section instead of the whole article, pass `section` as the first unnamed parameter. Any other word replaces "article" in the message the same way.
 
 ```wikitext
 {{Msgbox
@@ -501,7 +501,7 @@ For a specific section:
 
 **Page to create:** `Template:Cleanup`
 
-Uses the warning style (orange). Shown on articles with formatting or quality issues.
+Style: warning (orange). Add it to articles with formatting or quality problems.
 
 ```wikitext
 {{Msgbox
@@ -545,7 +545,7 @@ For a section:
 
 **Page to create:** `Template:Original research`
 
-Uses the warning style (orange). Shown on articles that contain unverified claims or personal analysis.
+Style: warning (orange). Add it to articles with unverified claims or personal analysis.
 
 ```wikitext
 {{Msgbox
@@ -589,7 +589,7 @@ For a section:
 
 **Page to create:** `Template:Under construction`
 
-Uses the default notice style (blue). Shown on articles that are actively being worked on.
+Style: notice (blue). Add it to articles that editors are working on now.
 
 ```wikitext
 {{Msgbox
@@ -619,7 +619,7 @@ Uses the default notice style (blue). Shown on articles that are actively being 
 
 **Page to create:** `Template:Merge`
 
-Uses the progressive style (blue background). Shown when a merge with another article is proposed. Requires the target article name as the first parameter.
+Style: progressive (blue background). Add it when you propose merging the article with another one. Pass the target article name as the first parameter.
 
 ```wikitext
 {{Msgbox
@@ -658,7 +658,7 @@ Uses the progressive style (blue background). Shown when a merge with another ar
 
 **Page to create:** `Template:Delete`
 
-Uses the error style (red). Shown on articles proposed for deletion.
+Style: error (red). Add it to articles you propose for deletion.
 
 ```wikitext
 {{Msgbox
@@ -690,7 +690,7 @@ Uses the error style (red). Shown on articles proposed for deletion.
 
 **Page to create:** `Template:Fact checked`
 
-Uses the success style (green). Shown on articles whose sources have been verified.
+Style: success (green). Add it once an editor has checked the article's sources.
 
 ```wikitext
 {{Msgbox
@@ -743,7 +743,7 @@ For a section:
 
 **Page to create:** `Template:Unverified`
 
-Uses the warning style (orange). Shown on articles that have not yet been fact-checked.
+Style: warning (orange). Add it to articles awaiting a fact check.
 
 ```wikitext
 {{Msgbox
@@ -785,7 +785,7 @@ For a section:
 
 ## Codex Design Tokens Reference
 
-These are the CSS custom properties used by the templates. Vector 2022 and Minerva define these and automatically adjust them for dark mode. The fallback value (after the comma) is used by skins that don't define the variable (MonoBook, Timeless).
+The templates use these CSS custom properties. Vector 2022 and Minerva define them and adjust them for dark mode. Skins that don't define a variable, such as MonoBook and Timeless, use the fallback value after the comma.
 
 ### Border Colors (for `accent` parameter)
 
@@ -817,11 +817,11 @@ These are the CSS custom properties used by the templates. Vector 2022 and Miner
 
 ---
 
-## How to Add a New Type
+## Adding a New Type
 
-To create a new shortcut template (e.g. `Template:POV`):
+To create a shortcut template such as `Template:POV`:
 
-1. Pick the appropriate `accent` and `bg` tokens from the reference above
+1. Pick the `accent` and `bg` tokens from the reference above
 2. Pick an emoji icon
 3. Create the template page with this pattern:
 

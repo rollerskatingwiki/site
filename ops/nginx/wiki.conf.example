@@ -40,7 +40,7 @@ server {
         include fastcgi_params;
     }
 
-    # Any other .php is neither executed nor served as source
+    # nginx neither runs nor serves any other .php
     location ~ \.php$ {
         return 404;
     }
